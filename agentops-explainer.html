@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentOps Dashboard - Complete Explainer</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d2e;
+    --surface2: #242840;
+    --accent: #ff6b35;
+    --accent2: #4ecdc4;
+    --accent3: #45b7d1;
+    --accent4: #f7dc6f;
+    --text: #e8e8e8;
+    --muted: #8b8fa3;
+    --border: #2d3154;
+    --red: #e74c3c;
+    --green: #2ecc71;
+    --purple: #9b59b6;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  .progress-bar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    height: 4px; background: var(--surface);
+  }
+  .progress-fill {
+    height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent2));
+    transition: width 0.3s;
+  }
+
+  nav {
+    position: fixed; top: 4px; left: 0; right: 0; z-index: 99;
+    background: rgba(15, 17, 23, 0.95); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border); padding: 12px 0;
+  }
+  nav .inner {
+    max-width: 1000px; margin: 0 auto; padding: 0 24px;
+    display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none;
+  }
+  nav .inner::-webkit-scrollbar { display: none; }
+  nav button {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    padding: 6px 14px; border-radius: 20px; cursor: pointer; font-size: 13px;
+    white-space: nowrap; transition: all 0.2s;
+  }
+  nav button:hover, nav button.active {
+    background: var(--accent); color: white; border-color: var(--accent);
+  }
+
+  .container { max-width: 1000px; margin: 0 auto; padding: 80px 24px 60px; }
+
+  section {
+    margin-bottom: 60px;
+    opacity: 0; transform: translateY(30px);
+    animation: fadeUp 0.6s ease forwards;
+  }
+  @keyframes fadeUp {
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .section-num {
+    display: inline-block; background: var(--accent);
+    color: white; font-weight: 700; font-size: 14px;
+    width: 32px; height: 32px; line-height: 32px; text-align: center;
+    border-radius: 50%; margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 42px; font-weight: 800;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    margin-bottom: 16px; line-height: 1.2;
+  }
+  h2 {
+    font-size: 28px; font-weight: 700; margin-bottom: 16px;
+    color: var(--text);
+  }
+  h3 {
+    font-size: 20px; font-weight: 600; margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { color: var(--muted); margin-bottom: 16px; font-size: 16px; }
+  p strong { color: var(--text); }
+
+  .hero-sub {
+    font-size: 20px; color: var(--muted); max-width: 700px; margin-bottom: 32px;
+  }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 28px; margin-bottom: 20px;
+    transition: border-color 0.3s;
+  }
+  .card:hover { border-color: var(--accent); }
+
+  .card-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+  }
+  @media (max-width: 700px) {
+    .card-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 30px; }
+  }
+
+  .badge {
+    display: inline-block; padding: 4px 12px; border-radius: 12px;
+    font-size: 12px; font-weight: 600; margin-bottom: 12px;
+  }
+  .badge-orange { background: rgba(255,107,53,0.15); color: var(--accent); }
+  .badge-teal { background: rgba(78,205,196,0.15); color: var(--accent2); }
+  .badge-blue { background: rgba(69,183,209,0.15); color: var(--accent3); }
+  .badge-yellow { background: rgba(247,220,111,0.15); color: var(--accent4); }
+  .badge-red { background: rgba(231,76,60,0.15); color: var(--red); }
+  .badge-green { background: rgba(46,204,113,0.15); color: var(--green); }
+  .badge-purple { background: rgba(155,89,182,0.15); color: var(--purple); }
+
+  .analogy-box {
+    background: linear-gradient(135deg, rgba(255,107,53,0.08), rgba(78,205,196,0.08));
+    border: 1px solid rgba(255,107,53,0.3);
+    border-radius: 16px; padding: 28px; margin: 24px 0;
+  }
+  .analogy-box .emoji { font-size: 32px; margin-bottom: 12px; }
+  .analogy-box h3 { color: var(--accent); }
+
+  .flow-diagram {
+    display: flex; align-items: center; justify-content: center;
+    gap: 0; margin: 30px 0; flex-wrap: wrap;
+  }
+  .flow-box {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px 20px; text-align: center;
+    min-width: 140px;
+  }
+  .flow-box .icon { font-size: 28px; margin-bottom: 6px; }
+  .flow-box .label { font-size: 13px; color: var(--muted); }
+  .flow-box .title { font-size: 15px; font-weight: 600; color: var(--text); }
+  .flow-arrow {
+    font-size: 24px; color: var(--accent); padding: 0 8px;
+    flex-shrink: 0;
+  }
+
+  .problem-block {
+    background: rgba(231,76,60,0.08); border-left: 4px solid var(--red);
+    border-radius: 0 12px 12px 0; padding: 20px 24px; margin: 16px 0;
+  }
+  .solution-block {
+    background: rgba(46,204,113,0.08); border-left: 4px solid var(--green);
+    border-radius: 0 12px 12px 0; padding: 20px 24px; margin: 16px 0;
+  }
+
+  .comparison-table {
+    width: 100%; border-collapse: collapse; margin: 20px 0;
+    font-size: 14px;
+  }
+  .comparison-table th {
+    background: var(--surface2); color: var(--accent2);
+    padding: 12px 16px; text-align: left; border-bottom: 2px solid var(--border);
+  }
+  .comparison-table td {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .comparison-table tr:hover td { background: var(--surface); }
+
+  .stat-row {
+    display: flex; gap: 20px; margin: 20px 0; flex-wrap: wrap;
+  }
+  .stat-box {
+    flex: 1; min-width: 150px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px; text-align: center;
+  }
+  .stat-num {
+    font-size: 36px; font-weight: 800;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .stat-label { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+  .timeline {
+    position: relative; padding-left: 40px; margin: 24px 0;
+  }
+  .timeline::before {
+    content: ''; position: absolute; left: 16px; top: 0; bottom: 0;
+    width: 2px; background: var(--border);
+  }
+  .timeline-item {
+    position: relative; margin-bottom: 24px; padding-left: 20px;
+  }
+  .timeline-item::before {
+    content: ''; position: absolute; left: -28px; top: 8px;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--accent); border: 3px solid var(--bg);
+  }
+  .timeline-item .time {
+    font-size: 12px; color: var(--accent); font-weight: 600;
+    text-transform: uppercase; margin-bottom: 4px;
+  }
+
+  .layer-stack {
+    margin: 24px 0;
+  }
+  .layer {
+    padding: 20px 24px; margin-bottom: 4px;
+    border-radius: 8px; display: flex; align-items: center; gap: 16px;
+  }
+  .layer .num {
+    width: 36px; height: 36px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 14px; flex-shrink: 0;
+  }
+  .layer-1 { background: rgba(255,107,53,0.12); }
+  .layer-1 .num { background: var(--accent); color: white; }
+  .layer-2 { background: rgba(78,205,196,0.12); }
+  .layer-2 .num { background: var(--accent2); color: var(--bg); }
+  .layer-3 { background: rgba(69,183,209,0.12); }
+  .layer-3 .num { background: var(--accent3); color: white; }
+  .layer-4 { background: rgba(155,89,182,0.12); }
+  .layer-4 .num { background: var(--purple); color: white; }
+
+  .highlight-text {
+    color: var(--accent); font-weight: 600;
+  }
+
+  .tag-list {
+    display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0;
+  }
+  .tag {
+    background: var(--surface2); border: 1px solid var(--border);
+    padding: 4px 12px; border-radius: 8px; font-size: 13px; color: var(--muted);
+  }
+
+  .final-cta {
+    background: linear-gradient(135deg, rgba(255,107,53,0.15), rgba(78,205,196,0.15));
+    border: 1px solid var(--accent);
+    border-radius: 20px; padding: 40px; text-align: center; margin: 40px 0;
+  }
+  .final-cta h2 {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+
+  .toc { list-style: none; }
+  .toc li {
+    padding: 8px 0; border-bottom: 1px solid var(--border);
+    font-size: 15px;
+  }
+  .toc li a { color: var(--accent2); text-decoration: none; }
+  .toc li a:hover { color: var(--accent); }
+  .toc li span { color: var(--muted); margin-left: 8px; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+
+<nav>
+  <div class="inner">
+    <button onclick="scrollToSection('context')" class="active">Context</button>
+    <button onclick="scrollToSection('problem')">The Problem</button>
+    <button onclick="scrollToSection('building-blocks')">Building Blocks</button>
+    <button onclick="scrollToSection('lakebase')">Lakebase</button>
+    <button onclick="scrollToSection('inference')">Inference Tables</button>
+    <button onclick="scrollToSection('mlflow')">MLflow</button>
+    <button onclick="scrollToSection('unity')">Unity Catalog</button>
+    <button onclick="scrollToSection('gap')">The Gap</button>
+    <button onclick="scrollToSection('solution')">Our Solution</button>
+    <button onclick="scrollToSection('architecture')">Architecture</button>
+    <button onclick="scrollToSection('pitch')">The Pitch</button>
+  </div>
+</nav>
+
+<div class="container">
+
+  <!-- ============ SECTION 1: CONTEXT ============ -->
+  <section id="context">
+    <h1>AgentOps Dashboard<br>Complete Explainer</h1>
+    <p class="hero-sub">Everything you need to understand - from scratch - about what we're building, why it matters, and how every piece fits together.</p>
+
+    <div class="card">
+      <h3>Table of Contents</h3>
+      <ul class="toc">
+        <li><a href="#context">1. The Big Picture</a> <span>What Databricks wants from partners</span></li>
+        <li><a href="#problem">2. The Real-World Problem</a> <span>Why companies are struggling today</span></li>
+        <li><a href="#building-blocks">3. Databricks Building Blocks</a> <span>The 6 technologies you need to understand</span></li>
+        <li><a href="#lakebase">4. Deep Dive: Lakebase</a> <span>What it is, why it exists, how it works</span></li>
+        <li><a href="#inference">5. Deep Dive: Inference Tables</a> <span>The automatic logging system</span></li>
+        <li><a href="#mlflow">6. Deep Dive: MLflow Tracing & Evaluation</a> <span>X-ray vision for AI agents</span></li>
+        <li><a href="#unity">7. Deep Dive: Unity Catalog</a> <span>The security guard of Databricks</span></li>
+        <li><a href="#gap">8. The Gap Nobody Has Filled</a> <span>What's missing and why it matters</span></li>
+        <li><a href="#solution">9. Our Solution: AgentOps Dashboard</a> <span>What exactly we're building</span></li>
+        <li><a href="#architecture">10. Architecture & How It All Connects</a> <span>Technical flow, end to end</span></li>
+        <li><a href="#pitch">11. The Pitch to Databricks</a> <span>Why they'll love this</span></li>
+      </ul>
+    </div>
+
+    <div class="card" style="animation-delay: 0.2s;">
+      <span class="badge badge-orange">PARTNER INITIATIVE</span>
+      <h3>What's Happening?</h3>
+      <p>Databricks wants its partners (companies like ours) to <strong>build small demo projects ("accelerators")</strong> that showcase their newest features. Think of it like a talent show - Databricks is the judge, and we need to impress them.</p>
+      <p><strong>What's at stake:</strong> If we do well, we get recognition, better deals, and more business from Databricks. Other companies have already done their demos:</p>
+
+      <div class="card-grid" style="margin-top: 16px;">
+        <div style="background:var(--surface2);padding:20px;border-radius:12px;">
+          <span class="badge badge-red">TAKEN</span>
+          <p style="margin:0;"><strong>Accenture</strong> demonstrated Genie Code (AI assistant for data work) + Unity Catalog (data governance).</p>
+        </div>
+        <div style="background:var(--surface2);padding:20px;border-radius:12px;">
+          <span class="badge badge-red">TAKEN</span>
+          <p style="margin:0;"><strong>Cerebral Technologies</strong> demonstrated Lakebase (operational database) for their migration and observability tools.</p>
+        </div>
+      </div>
+      <p style="margin-top:16px;"><strong>Our challenge:</strong> Build something different, impressive, and achievable that showcases Databricks' latest features - without copying what others have done.</p>
+    </div>
+  </section>
+
+  <!-- ============ SECTION 2: THE PROBLEM ============ -->
+  <section id="problem">
+    <span class="section-num">2</span>
+    <h2>The Real-World Problem We're Solving</h2>
+    <p>To understand our solution, you first need to understand what's happening in the industry right now.</p>
+
+    <div class="analogy-box">
+      <div class="emoji">🏭</div>
+      <h3>Think of it Like a Factory</h3>
+      <p>Imagine a factory that makes custom products using robots (AI agents). The robots are smart - they can talk to customers, look up inventory, make decisions, and complete orders. But here's the problem:</p>
+      <p><strong>Nobody is watching the robots.</strong></p>
+      <p>The factory manager doesn't know: How many products did each robot make? How much electricity (money) did each robot use? Did any robot give wrong information to a customer? Did a robot access a restricted area it shouldn't have? When things go wrong, nobody knows why or where it happened.</p>
+      <p style="margin-bottom:0;"><strong>That's exactly what's happening with AI agents in companies today.</strong></p>
+    </div>
+
+    <h3>What Are AI Agents?</h3>
+    <p>Before we go further - <strong>AI agents</strong> are programs that use AI models (like ChatGPT) to do tasks autonomously. Unlike a simple chatbot that just answers questions, an agent can:</p>
+
+    <div class="card-grid">
+      <div class="card" style="margin:0;">
+        <p style="margin:0;"><strong>Think & Plan:</strong> Break a complex task into steps</p>
+      </div>
+      <div class="card" style="margin:0;">
+        <p style="margin:0;"><strong>Use Tools:</strong> Query databases, call APIs, read files</p>
+      </div>
+      <div class="card" style="margin:0;">
+        <p style="margin:0;"><strong>Make Decisions:</strong> Choose which action to take next</p>
+      </div>
+      <div class="card" style="margin:0;">
+        <p style="margin:0;"><strong>Remember:</strong> Keep track of conversation and state</p>
+      </div>
+    </div>
+
+    <p style="margin-top:20px;">Example: A "Sales Agent" on Databricks might receive a customer query, look up the customer in a database, check their purchase history, generate a personalized recommendation, and update the CRM - all automatically.</p>
+
+    <h3 style="margin-top:24px;">The Problem in Numbers</h3>
+    <div class="stat-row">
+      <div class="stat-box">
+        <div class="stat-num">46%</div>
+        <div class="stat-label">of AI agent POCs (proof of concepts) FAIL<br>due to lack of monitoring</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">$$$</div>
+        <div class="stat-label">Companies can't track how much<br>each agent costs to run</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">???</div>
+        <div class="stat-label">When an agent gives wrong info,<br>nobody knows WHY</div>
+      </div>
+    </div>
+
+    <div class="problem-block">
+      <h3 style="color: var(--red);">The Core Problem</h3>
+      <p style="margin-bottom:0;">Companies are building AI agents on Databricks, but once those agents are live in production, <strong>there is no single dashboard</strong> where you can see: Are they healthy? How much are they costing? Are they giving accurate answers? Are they following the rules? This is called the <strong>"Observability Gap."</strong></p>
+    </div>
+  </section>
+
+  <!-- ============ SECTION 3: BUILDING BLOCKS ============ -->
+  <section id="building-blocks">
+    <span class="section-num">3</span>
+    <h2>The 6 Databricks Technologies You Need to Know</h2>
+    <p>Our solution uses 6 Databricks features. Each one already exists individually, but nobody has stitched them together into one product. Here's what each one does:</p>
+
+    <div class="layer-stack">
+      <div class="layer layer-1">
+        <div class="num">1</div>
+        <div>
+          <strong>Lakebase</strong> - The operational database (our app stores its data here)
+          <br><span style="color:var(--muted);font-size:14px;">Think: PostgreSQL database, but built INTO Databricks</span>
+        </div>
+      </div>
+      <div class="layer layer-2">
+        <div class="num">2</div>
+        <div>
+          <strong>Databricks Apps</strong> - The framework to deploy our dashboard
+          <br><span style="color:var(--muted);font-size:14px;">Think: Like deploying a website, but on Databricks servers</span>
+        </div>
+      </div>
+      <div class="layer layer-3">
+        <div class="num">3</div>
+        <div>
+          <strong>Inference Tables</strong> - Auto-logged data from every AI agent call
+          <br><span style="color:var(--muted);font-size:14px;">Think: Security cameras that automatically record everything agents do</span>
+        </div>
+      </div>
+      <div class="layer layer-1">
+        <div class="num">4</div>
+        <div>
+          <strong>MLflow Tracing</strong> - Detailed step-by-step trace of agent reasoning
+          <br><span style="color:var(--muted);font-size:14px;">Think: X-ray of an agent's thought process</span>
+        </div>
+      </div>
+      <div class="layer layer-4">
+        <div class="num">5</div>
+        <div>
+          <strong>MLflow Agent Evaluation</strong> - Quality scoring system
+          <br><span style="color:var(--muted);font-size:14px;">Think: A teacher grading the agent's answers</span>
+        </div>
+      </div>
+      <div class="layer layer-2">
+        <div class="num">6</div>
+        <div>
+          <strong>Unity Catalog</strong> - Security and governance system
+          <br><span style="color:var(--muted);font-size:14px;">Think: The security guard + filing system for all data</span>
+        </div>
+      </div>
+    </div>
+
+    <p>Now let's understand each one in detail...</p>
+  </section>
+
+  <!-- ============ SECTION 4: LAKEBASE ============ -->
+  <section id="lakebase">
+    <span class="section-num">4</span>
+    <h2>Deep Dive: What is Lakebase?</h2>
+
+    <div class="analogy-box">
+      <div class="emoji">🏠</div>
+      <h3>The Simple Analogy</h3>
+      <p>Imagine you have a library (Databricks Lakehouse) where you store millions of books (data) for research (analytics). This library is great for reading and analysis, but it's slow - if you need to quickly check a book in and out, it takes time.</p>
+      <p>Now imagine you also need a <strong>front desk</strong> where transactions happen fast - someone returns a book, someone borrows one, you update the inventory instantly.</p>
+      <p>Previously, you needed a <strong>separate building</strong> (external database like PostgreSQL or MySQL) for this front desk work. And every night, you had to manually carry copies of the transaction records from the front desk to the library so analysts could study them.</p>
+      <p style="margin-bottom:0;"><strong>Lakebase = a front desk BUILT INSIDE the library.</strong> No more separate building. No more manual copying. Everything is in one place.</p>
+    </div>
+
+    <h3>The Technical Explanation</h3>
+    <p>There are two types of databases in the world:</p>
+
+    <table class="comparison-table">
+      <tr>
+        <th>Type</th>
+        <th>OLTP (Transactional)</th>
+        <th>OLAP (Analytical)</th>
+      </tr>
+      <tr>
+        <td><strong>What it does</strong></td>
+        <td>Fast reads/writes for applications</td>
+        <td>Heavy analysis on large datasets</td>
+      </tr>
+      <tr>
+        <td><strong>Speed</strong></td>
+        <td>Milliseconds (sub-10ms)</td>
+        <td>Seconds to minutes</td>
+      </tr>
+      <tr>
+        <td><strong>Example use</strong></td>
+        <td>User logs in, agent updates a record</td>
+        <td>"Show me sales trends for last 3 years"</td>
+      </tr>
+      <tr>
+        <td><strong>Traditional tool</strong></td>
+        <td>PostgreSQL, MySQL</td>
+        <td>Databricks, Snowflake, BigQuery</td>
+      </tr>
+    </table>
+
+    <p><strong>The old problem:</strong> Companies needed BOTH. They ran PostgreSQL separately for their apps, and Databricks for analytics. They built complex ETL (Extract-Transform-Load) pipelines to copy data between them every few hours. This was:</p>
+
+    <div class="card-grid">
+      <div class="problem-block" style="margin:0;">
+        <p style="margin:0;"><strong>Expensive:</strong> Two separate systems to maintain and pay for</p>
+      </div>
+      <div class="problem-block" style="margin:0;">
+        <p style="margin:0;"><strong>Fragile:</strong> ETL pipelines break constantly</p>
+      </div>
+      <div class="problem-block" style="margin:0;">
+        <p style="margin:0;"><strong>Stale:</strong> Analytics data was always hours behind</p>
+      </div>
+      <div class="problem-block" style="margin:0;">
+        <p style="margin:0;"><strong>Ungoverned:</strong> Security rules didn't carry over between systems</p>
+      </div>
+    </div>
+
+    <div class="solution-block" style="margin-top:24px;">
+      <h3 style="color: var(--green);">Lakebase Solves This</h3>
+      <p><strong>Lakebase is a fully managed PostgreSQL database that lives INSIDE Databricks.</strong></p>
+      <p>It means you can now build apps (with fast read/write) AND do heavy analytics on the same platform. No ETL pipelines needed. Same security rules everywhere. Data is always fresh.</p>
+      <p style="margin-bottom:0;">It's compatible with standard PostgreSQL, so any tool that works with Postgres (pgAdmin, SQLAlchemy, Django, etc.) works with Lakebase too.</p>
+    </div>
+
+    <h3 style="margin-top:24px;">Key Features of Lakebase</h3>
+    <div class="card-grid">
+      <div class="card" style="margin:0;">
+        <span class="badge badge-teal">SERVERLESS</span>
+        <p style="margin:0;">Scales up/down automatically. Can even scale to zero when nobody is using it - you only pay for what you use.</p>
+      </div>
+      <div class="card" style="margin:0;">
+        <span class="badge badge-blue">GIT-LIKE BRANCHING</span>
+        <p style="margin:0;">Create a copy of your entire database in seconds for testing. Like creating a Git branch, but for a database.</p>
+      </div>
+      <div class="card" style="margin:0;">
+        <span class="badge badge-orange">UNIFIED GOVERNANCE</span>
+        <p style="margin:0;">Uses Unity Catalog, so the same security rules apply to both your app data and analytics data.</p>
+      </div>
+      <div class="card" style="margin:0;">
+        <span class="badge badge-purple">AI READY</span>
+        <p style="margin:0;">Supports pgvector for AI embeddings and PostGIS for location data out of the box.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top:24px;">How We Use Lakebase in Our Accelerator</h3>
+    <p>Our AgentOps Dashboard is a <strong>web application</strong>. Like any web app, it needs a database to store:</p>
+    <ul style="color:var(--muted);padding-left:24px;">
+      <li>Dashboard configuration (which agents to monitor, alert thresholds)</li>
+      <li>User preferences and saved views</li>
+      <li>Alert rules and notification history</li>
+      <li>Cached metrics for fast dashboard loading</li>
+    </ul>
+    <p>Instead of using an external PostgreSQL, we use <strong>Lakebase</strong> - keeping everything inside Databricks. This is intentional because it showcases Lakebase as a real-world app backend.</p>
+  </section>
+
+  <!-- ============ SECTION 5: INFERENCE TABLES ============ -->
+  <section id="inference">
+    <span class="section-num">5</span>
+    <h2>Deep Dive: What are Inference Tables?</h2>
+
+    <div class="analogy-box">
+      <div class="emoji">📹</div>
+      <h3>The Simple Analogy</h3>
+      <p>Imagine every AI agent in your company is an employee. <strong>Inference Tables are like security cameras that automatically record every conversation that employee has.</strong></p>
+      <p>Every time someone asks the AI agent a question, the question (input), the answer (output), how long it took, and how many "words" (tokens) it used are all automatically saved to a table.</p>
+      <p style="margin-bottom:0;">You don't have to write any code to enable this - just flip a switch, and Databricks starts recording everything.</p>
+    </div>
+
+    <h3>How They Work - Step by Step</h3>
+    <div class="flow-diagram">
+      <div class="flow-box">
+        <div class="icon">👤</div>
+        <div class="title">User</div>
+        <div class="label">Sends request</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box" style="border-color:var(--accent);">
+        <div class="icon">🚪</div>
+        <div class="title">AI Gateway</div>
+        <div class="label">Routes & logs</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box">
+        <div class="icon">🤖</div>
+        <div class="title">AI Agent</div>
+        <div class="label">Processes & responds</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box" style="border-color:var(--accent2);">
+        <div class="icon">📊</div>
+        <div class="title">Inference Table</div>
+        <div class="label">Auto-saved in Unity Catalog</div>
+      </div>
+    </div>
+
+    <h3>What Gets Logged Automatically</h3>
+    <table class="comparison-table">
+      <tr><th>Field</th><th>What It Means</th><th>Why It Matters</th></tr>
+      <tr><td><strong>Request payload</strong></td><td>The question/prompt sent to the agent</td><td>Know what users are asking</td></tr>
+      <tr><td><strong>Response payload</strong></td><td>The agent's answer</td><td>Review what agents are saying</td></tr>
+      <tr><td><strong>Token count</strong></td><td>How many "words" the AI processed</td><td>Tokens = money (this is how AI costs are calculated)</td></tr>
+      <tr><td><strong>Latency</strong></td><td>How long the response took</td><td>Detect slow agents</td></tr>
+      <tr><td><strong>Status code</strong></td><td>Success (200) or error (400, 500, etc.)</td><td>Track failures</td></tr>
+      <tr><td><strong>Timestamp</strong></td><td>When the request happened</td><td>Time-based analysis</td></tr>
+    </table>
+
+    <h3 style="margin-top:20px;">What is AI Gateway?</h3>
+    <p><strong>AI Gateway</strong> is the "front door" for all AI model calls. Instead of each agent calling OpenAI/Anthropic/Llama directly, they go through the AI Gateway. This gateway:</p>
+    <ul style="color:var(--muted);padding-left:24px;margin-bottom:16px;">
+      <li>Controls who can access which AI models (rate limiting, access control)</li>
+      <li>Routes requests to the right model</li>
+      <li>Automatically logs everything to Inference Tables</li>
+    </ul>
+
+    <h3>How We Use Inference Tables in Our Accelerator</h3>
+    <p>Inference Tables are our <strong>primary data source</strong>. They already contain all the raw data about every agent call. Our dashboard simply <strong>reads this data and visualizes it</strong> - showing health metrics, costs, error rates, and performance trends. We don't need to build any logging system; it already exists.</p>
+  </section>
+
+  <!-- ============ SECTION 6: MLFLOW ============ -->
+  <section id="mlflow">
+    <span class="section-num">6</span>
+    <h2>Deep Dive: MLflow Tracing & Agent Evaluation</h2>
+
+    <div class="analogy-box">
+      <div class="emoji">🔬</div>
+      <h3>The Simple Analogy</h3>
+      <p><strong>Inference Tables</strong> tell you WHAT happened (this agent answered this question at this time).</p>
+      <p><strong>MLflow Tracing</strong> tells you HOW and WHY it happened (the agent first searched the database, then read 3 documents, then thought about which one was relevant, then formulated the answer).</p>
+      <p style="margin-bottom:0;">If Inference Tables are security cameras showing people entering and leaving a room, <strong>MLflow Tracing is an X-ray showing exactly what happened inside that room, step by step.</strong></p>
+    </div>
+
+    <h3>What MLflow Tracing Records</h3>
+    <p>When an agent processes a request, it goes through multiple steps. MLflow Tracing records each step:</p>
+
+    <div class="timeline">
+      <div class="timeline-item">
+        <div class="time">Step 1: Receive Input</div>
+        <p style="margin:0;">User asks: "What were our top sales last quarter?"</p>
+      </div>
+      <div class="timeline-item">
+        <div class="time">Step 2: Tool Call - Database Query</div>
+        <p style="margin:0;">Agent calls: <code>query_sales_db(quarter='Q4', sort='desc', limit=10)</code></p>
+      </div>
+      <div class="timeline-item">
+        <div class="time">Step 3: Retrieval</div>
+        <p style="margin:0;">Agent retrieves 10 rows of sales data from the database</p>
+      </div>
+      <div class="timeline-item">
+        <div class="time">Step 4: LLM Reasoning</div>
+        <p style="margin:0;">Agent sends data to AI model: "Summarize these sales results..."</p>
+      </div>
+      <div class="timeline-item">
+        <div class="time">Step 5: Output</div>
+        <p style="margin:0;">Agent responds: "The top 3 products by revenue were..."</p>
+      </div>
+    </div>
+
+    <p>Each step records: input, output, duration, tokens used, and any errors. This is invaluable for debugging - if the agent gives a wrong answer, you can trace back to exactly which step went wrong.</p>
+
+    <h3 style="margin-top:24px;">What is Agent Evaluation?</h3>
+    <p>Agent Evaluation is the <strong>"grading system"</strong> for AI agents. It uses another AI model (called an "LLM Judge") to automatically grade the quality of agent responses:</p>
+
+    <div class="card-grid">
+      <div class="card" style="margin:0;">
+        <span class="badge badge-green">GROUNDEDNESS</span>
+        <p style="margin:0;">Is the answer based on actual data, or did the agent make things up? (detecting hallucinations)</p>
+      </div>
+      <div class="card" style="margin:0;">
+        <span class="badge badge-blue">RELEVANCE</span>
+        <p style="margin:0;">Does the answer actually address what the user asked?</p>
+      </div>
+      <div class="card" style="margin:0;">
+        <span class="badge badge-red">SAFETY</span>
+        <p style="margin:0;">Does the answer contain harmful, biased, or inappropriate content?</p>
+      </div>
+      <div class="card" style="margin:0;">
+        <span class="badge badge-yellow">CORRECTNESS</span>
+        <p style="margin:0;">If we have the right answer, does the agent's answer match?</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top:24px;">How We Use This in Our Accelerator</h3>
+    <p>Our dashboard runs Agent Evaluation on a <strong>sample of production traffic</strong> (say 10% of all requests) and shows the quality scores as trends over time. If quality drops (e.g., groundedness score goes from 95% to 80%), the dashboard alerts the team immediately.</p>
+  </section>
+
+  <!-- ============ SECTION 7: UNITY CATALOG ============ -->
+  <section id="unity">
+    <span class="section-num">7</span>
+    <h2>Deep Dive: What is Unity Catalog?</h2>
+
+    <div class="analogy-box">
+      <div class="emoji">🔐</div>
+      <h3>The Simple Analogy</h3>
+      <p>Imagine a huge office building (Databricks). In this building, there are thousands of filing cabinets (tables), AI assistants (models), and applications (agents).</p>
+      <p><strong>Unity Catalog is the building's security system + filing system combined.</strong> It knows:</p>
+      <ul style="color:var(--muted);">
+        <li>WHERE everything is stored (like a directory)</li>
+        <li>WHO is allowed to access what (like key cards)</li>
+        <li>WHERE data came from and where it went (like a mail tracking system)</li>
+        <li>WHAT happened to data and when (like an audit trail / CCTV logs)</li>
+      </ul>
+      <p style="margin-bottom:0;">Without Unity Catalog, it's like having a building with no locks on doors and no visitor log.</p>
+    </div>
+
+    <h3>The Three-Level Structure</h3>
+    <div class="flow-diagram">
+      <div class="flow-box" style="border-color:var(--accent);">
+        <div class="icon">📁</div>
+        <div class="title">Catalog</div>
+        <div class="label">e.g., "production"</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box" style="border-color:var(--accent2);">
+        <div class="icon">📂</div>
+        <div class="title">Schema</div>
+        <div class="label">e.g., "sales_data"</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box" style="border-color:var(--accent3);">
+        <div class="icon">📋</div>
+        <div class="title">Table/Model/Agent</div>
+        <div class="label">e.g., "customers"</div>
+      </div>
+    </div>
+    <p style="text-align:center;color:var(--muted);font-size:14px;">You access data as: <code>production.sales_data.customers</code></p>
+
+    <h3 style="margin-top:24px;">Key Capabilities</h3>
+    <table class="comparison-table">
+      <tr><th>Capability</th><th>What It Does</th><th>Real-World Example</th></tr>
+      <tr><td><strong>Access Control</strong></td><td>Define who can see/edit what data</td><td>"Only the finance team can access salary data"</td></tr>
+      <tr><td><strong>Data Lineage</strong></td><td>Track where data flows</td><td>"This dashboard metric came from table X, which was created from tables Y and Z"</td></tr>
+      <tr><td><strong>Auditing</strong></td><td>Log every access event</td><td>"User A queried the customer table at 3:15 PM"</td></tr>
+      <tr><td><strong>Data Discovery</strong></td><td>Search and find data assets</td><td>"Show me all tables tagged 'PII' (Personal Identifiable Information)"</td></tr>
+    </table>
+
+    <h3 style="margin-top:24px;">How We Use Unity Catalog in Our Accelerator</h3>
+    <p>Our dashboard uses Unity Catalog for two purposes:</p>
+    <ol style="color:var(--muted);padding-left:24px;">
+      <li><strong>Reading data:</strong> Inference Tables are stored in Unity Catalog, so we access them through it (with proper permissions)</li>
+      <li><strong>Governance panel:</strong> We show which data assets each agent accessed (using lineage data from Unity Catalog), creating a compliance-friendly audit trail</li>
+    </ol>
+  </section>
+
+  <!-- ============ SECTION 8: THE GAP ============ -->
+  <section id="gap">
+    <span class="section-num">8</span>
+    <h2>The Gap Nobody Has Filled</h2>
+    <p>Now that you understand all 6 building blocks, here's the key insight:</p>
+
+    <div class="card" style="border-color: var(--accent);">
+      <h3>All the data exists. No one has combined it.</h3>
+      <p>Databricks has built amazing individual tools:</p>
+      <ul style="color:var(--muted);padding-left:24px;">
+        <li><strong>Inference Tables</strong> log every agent call (health data)</li>
+        <li><strong>MLflow Tracing</strong> records step-by-step reasoning (debugging data)</li>
+        <li><strong>Agent Evaluation</strong> can grade quality (quality data)</li>
+        <li><strong>Unity Catalog</strong> tracks lineage and access (governance data)</li>
+        <li><strong>System Tables</strong> track billing and token usage (cost data)</li>
+      </ul>
+      <p style="margin-bottom:0;"><strong>But there is NO single dashboard that brings all this together.</strong> Today, a team managing AI agents in production has to manually write SQL queries, build notebooks, and cobble together their own monitoring system. That's like having a car with a speedometer, fuel gauge, and engine light - but each one is in a different room.</p>
+    </div>
+
+    <h3 style="margin-top:24px;">What Others Have Built vs What's Missing</h3>
+    <table class="comparison-table">
+      <tr>
+        <th>Partner</th>
+        <th>What They Built</th>
+        <th>What They DID NOT Build</th>
+      </tr>
+      <tr>
+        <td><strong>Accenture</strong></td>
+        <td>Genie Code demos, Unity Catalog governance</td>
+        <td>No production agent monitoring dashboard</td>
+      </tr>
+      <tr>
+        <td><strong>Cerebral</strong></td>
+        <td>Lakebase-powered observability for their own tools</td>
+        <td>No generic, reusable agent monitoring solution</td>
+      </tr>
+      <tr>
+        <td><strong>Lovelytics</strong></td>
+        <td>Taxonomy Agent (an agent for classifying data)</td>
+        <td>No ops dashboard for monitoring all agents</td>
+      </tr>
+      <tr>
+        <td><strong>Databricks</strong></td>
+        <td>Individual tools (Inference Tables, MLflow, etc.)</td>
+        <td style="color:var(--accent);font-weight:600;">No unified ops dashboard combining them all</td>
+      </tr>
+    </table>
+
+    <div class="solution-block" style="margin-top:24px;">
+      <h3 style="color: var(--green);">This is Our Opportunity</h3>
+      <p style="margin-bottom:0;">We build the <strong>"missing dashboard"</strong> - the one place where a team can see the health, cost, quality, and governance compliance of ALL their AI agents. And we build it <strong>entirely using Databricks' own features</strong>, showcasing Lakebase, Databricks Apps, Inference Tables, MLflow, and Unity Catalog working together.</p>
+    </div>
+  </section>
+
+  <!-- ============ SECTION 9: OUR SOLUTION ============ -->
+  <section id="solution">
+    <span class="section-num">9</span>
+    <h2>Our Solution: The AgentOps Dashboard</h2>
+    <p>A Databricks-native web application (deployed via Databricks Apps) that acts as a unified "control tower" for all AI agents running in production.</p>
+
+    <h3>The 4 Panels</h3>
+
+    <div class="card" style="border-left: 4px solid var(--accent);">
+      <span class="badge badge-orange">PANEL 1</span>
+      <h3>Agent Health Monitor</h3>
+      <p><strong>Data source:</strong> Inference Tables</p>
+      <p><strong>What it shows:</strong></p>
+      <ul style="color:var(--muted);padding-left:24px;">
+        <li>Real-time status of each agent (active, slow, erroring)</li>
+        <li>Requests per minute / hour / day</li>
+        <li>Average response time (latency)</li>
+        <li>Error rate (% of failed requests)</li>
+        <li>Alerts when an agent's error rate spikes above threshold</li>
+      </ul>
+      <p style="margin-bottom:0;"><strong>Value:</strong> Teams instantly know if something is broken, without writing SQL queries.</p>
+    </div>
+
+    <div class="card" style="border-left: 4px solid var(--accent2);">
+      <span class="badge badge-teal">PANEL 2</span>
+      <h3>Cost & Token Tracker</h3>
+      <p><strong>Data source:</strong> Inference Tables + System Tables (billing)</p>
+      <p><strong>What it shows:</strong></p>
+      <ul style="color:var(--muted);padding-left:24px;">
+        <li>Token usage per agent, per day/week/month</li>
+        <li>Cost per agent (tokens x price per token)</li>
+        <li>Cost per feature/use case</li>
+        <li>"Token burn rate" - how fast an agent is consuming tokens</li>
+        <li>Projected monthly cost</li>
+      </ul>
+      <p style="margin-bottom:0;"><strong>Value:</strong> This is a MAJOR gap. Companies deploying agents often get surprised by bills. This panel prevents that.</p>
+    </div>
+
+    <div class="card" style="border-left: 4px solid var(--accent3);">
+      <span class="badge badge-blue">PANEL 3</span>
+      <h3>Quality & Safety Scorecard</h3>
+      <p><strong>Data source:</strong> MLflow Agent Evaluation (run on sampled production traffic)</p>
+      <p><strong>What it shows:</strong></p>
+      <ul style="color:var(--muted);padding-left:24px;">
+        <li>Groundedness score over time (is the agent hallucinating?)</li>
+        <li>Relevance score (is it answering what was asked?)</li>
+        <li>Safety score (is it producing harmful content?)</li>
+        <li>Click any low-scoring response to see the full MLflow Trace (step-by-step reasoning)</li>
+        <li>Alerts when quality drops below threshold</li>
+      </ul>
+      <p style="margin-bottom:0;"><strong>Value:</strong> Catches hallucinations and quality regressions BEFORE users complain.</p>
+    </div>
+
+    <div class="card" style="border-left: 4px solid var(--purple);">
+      <span class="badge badge-purple">PANEL 4</span>
+      <h3>Governance & Audit Trail</h3>
+      <p><strong>Data source:</strong> Unity Catalog (lineage + access logs)</p>
+      <p><strong>What it shows:</strong></p>
+      <ul style="color:var(--muted);padding-left:24px;">
+        <li>Which data tables each agent accessed</li>
+        <li>Lineage map: data flow from source to agent response</li>
+        <li>Audit trail: who ran which agent, when, what was the input/output</li>
+        <li>Compliance flags for sensitive data access (PII, financial data)</li>
+      </ul>
+      <p style="margin-bottom:0;"><strong>Value:</strong> Essential for regulated industries (banking, healthcare). Proves agents are following the rules.</p>
+    </div>
+  </section>
+
+  <!-- ============ SECTION 10: ARCHITECTURE ============ -->
+  <section id="architecture">
+    <span class="section-num">10</span>
+    <h2>Architecture: How Everything Connects</h2>
+    <p>Here's the complete flow of how data moves through the system:</p>
+
+    <div class="card" style="overflow-x:auto;">
+      <pre style="color:var(--accent2);font-family:'Cascadia Code','Fira Code',monospace;font-size:13px;line-height:1.8;white-space:pre;">
+ ┌──────────────┐     ┌───────────────┐     ┌──────────────────┐
+ │  Users /     │────▶│  AI Gateway   │────▶│  AI Agents       │
+ │  Applications│     │  (front door) │     │  (on Databricks) │
+ └──────────────┘     └───────┬───────┘     └──────────────────┘
+                              │
+                    AUTO-LOGS │ (every request/response)
+                              ▼
+                   ┌─────────────────────┐
+                   │  INFERENCE TABLES   │  ← Stored in Unity Catalog
+                   │  (Delta Tables)     │     as governed Delta Tables
+                   └──────────┬──────────┘
+                              │
+            ┌─────────────────┼─────────────────┐
+            ▼                 ▼                  ▼
+   ┌────────────────┐ ┌──────────────┐ ┌────────────────────┐
+   │ MLflow Tracing │ │System Tables │ │  Unity Catalog     │
+   │ (step-by-step  │ │(billing &    │ │  (lineage, access  │
+   │  reasoning)    │ │ token costs) │ │   controls, audit) │
+   └───────┬────────┘ └──────┬───────┘ └─────────┬──────────┘
+           │                 │                    │
+           └─────────────────┼────────────────────┘
+                             │
+                    READS ALL│DATA
+                             ▼
+              ┌──────────────────────────┐
+              │   AGENTOPS DASHBOARD     │  ← Our Accelerator!
+              │   (Databricks App)       │
+              │                          │
+              │  ┌─────────┬──────────┐  │
+              │  │ Health  │ Cost &   │  │
+              │  │ Monitor │ Tokens   │  │
+              │  ├─────────┼──────────┤  │
+              │  │ Quality │Governance│  │
+              │  │ Scores  │ & Audit  │  │
+              │  └─────────┴──────────┘  │
+              │                          │
+              │  Backend: LAKEBASE       │  ← App config, alert rules,
+              │  (PostgreSQL)            │     cached metrics stored here
+              └──────────────────────────┘
+      </pre>
+    </div>
+
+    <h3 style="margin-top:24px;">Data Flow Explained Simply</h3>
+    <ol style="color:var(--muted);padding-left:24px;font-size:15px;">
+      <li style="margin-bottom:12px;"><strong>Users interact with AI agents</strong> through apps, chatbots, or APIs</li>
+      <li style="margin-bottom:12px;"><strong>AI Gateway</strong> routes these requests and <strong>automatically logs</strong> everything to Inference Tables</li>
+      <li style="margin-bottom:12px;"><strong>MLflow Tracing</strong> captures the detailed step-by-step reasoning of each agent</li>
+      <li style="margin-bottom:12px;"><strong>System Tables</strong> track the billing / token costs</li>
+      <li style="margin-bottom:12px;"><strong>Unity Catalog</strong> governs everything and tracks data lineage</li>
+      <li style="margin-bottom:12px;"><strong>Our AgentOps Dashboard</strong> reads ALL this existing data and presents it in 4 clean panels</li>
+      <li style="margin-bottom:0;"><strong>Lakebase</strong> stores the dashboard's own app data (configs, alerts, cached metrics)</li>
+    </ol>
+
+    <h3 style="margin-top:30px;">Tech Stack</h3>
+    <table class="comparison-table">
+      <tr><th>Component</th><th>Technology</th><th>Role</th></tr>
+      <tr><td>Frontend / UI</td><td>Streamlit or Gradio (Python)</td><td>The dashboard users see</td></tr>
+      <tr><td>Deployment</td><td>Databricks Apps</td><td>Hosts our app on Databricks servers</td></tr>
+      <tr><td>App Database</td><td>Lakebase (PostgreSQL)</td><td>Stores configs, alerts, cached data</td></tr>
+      <tr><td>Agent Data</td><td>Inference Tables (Delta)</td><td>Raw request/response logs</td></tr>
+      <tr><td>Trace Data</td><td>MLflow Tracing API</td><td>Step-by-step agent reasoning</td></tr>
+      <tr><td>Quality Scoring</td><td>MLflow Agent Evaluation</td><td>LLM-as-a-Judge quality grading</td></tr>
+      <tr><td>Security & Lineage</td><td>Unity Catalog</td><td>Access control + data lineage</td></tr>
+      <tr><td>Scheduled Jobs</td><td>Databricks Workflows</td><td>Run quality checks periodically</td></tr>
+      <tr><td>Cost Data</td><td>System Tables</td><td>Billing and token usage data</td></tr>
+    </table>
+  </section>
+
+  <!-- ============ SECTION 11: PITCH ============ -->
+  <section id="pitch">
+    <span class="section-num">11</span>
+    <h2>Why Databricks Will Love This</h2>
+
+    <div class="card-grid">
+      <div class="card" style="margin:0;">
+        <span class="badge badge-orange">REASON 1</span>
+        <h3>Showcases 6+ Features at Once</h3>
+        <p style="margin:0;">Lakebase, Databricks Apps, Inference Tables, MLflow, Agent Evaluation, Unity Catalog, System Tables, Workflows - all in one demo. No other partner does this.</p>
+      </div>
+      <div class="card" style="margin:0;">
+        <span class="badge badge-teal">REASON 2</span>
+        <h3>Fills a Real Gap</h3>
+        <p style="margin:0;">46% of agent POCs fail due to observability. Databricks knows this and just acquired Quotient AI to address it. Our accelerator complements their roadmap.</p>
+      </div>
+      <div class="card" style="margin:0;">
+        <span class="badge badge-blue">REASON 3</span>
+        <h3>No Overlap with Others</h3>
+        <p style="margin:0;">Accenture did Genie Code. Cerebral did Lakebase migration. Nobody built a production agent ops dashboard.</p>
+      </div>
+      <div class="card" style="margin:0;">
+        <span class="badge badge-purple">REASON 4</span>
+        <h3>100% Achievable</h3>
+        <p style="margin:0;">We're reading EXISTING data and building a dashboard. No heavy ML training, no complex research. Just smart integration.</p>
+      </div>
+    </div>
+
+    <div class="final-cta">
+      <h2>The One-Line Pitch</h2>
+      <p style="font-size:18px;max-width:700px;margin:16px auto 0;">
+        <em>"We built AgentOps Dashboard - a Databricks-native control tower that unifies Inference Tables, MLflow Tracing, Agent Evaluation, and Unity Catalog into a single pane of glass for production AI agent monitoring, cost attribution, and governance."</em>
+      </p>
+    </div>
+
+    <div class="card" style="margin-top:24px;">
+      <h3>Summary: What We're Really Doing</h3>
+      <div class="problem-block">
+        <p style="margin:0;"><strong>THE PROBLEM:</strong> Companies build AI agents on Databricks but have no unified way to monitor their health, track costs, ensure quality, and prove compliance in production.</p>
+      </div>
+      <div class="solution-block">
+        <p style="margin:0;"><strong>OUR SOLUTION:</strong> A single Databricks App that reads from already-existing data sources (Inference Tables, MLflow, Unity Catalog, System Tables) and displays 4 panels: Health, Cost, Quality, and Governance - using Lakebase as its backend. Zero new infrastructure needed.</p>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+  function scrollToSection(id) {
+    document.getElementById(id).scrollIntoView({ behavior: 'smooth' });
+  }
+
+  window.addEventListener('scroll', () => {
+    const fill = document.getElementById('progressFill');
+    const scrollTop = window.scrollY;
+    const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+    fill.style.width = (scrollTop / docHeight * 100) + '%';
+
+    const buttons = document.querySelectorAll('nav button');
+    const sections = document.querySelectorAll('section[id]');
+    let current = '';
+    sections.forEach(s => {
+      if (s.offsetTop - 120 <= scrollTop) current = s.id;
+    });
+    buttons.forEach(b => {
+      b.classList.toggle('active', b.getAttribute('onclick')?.includes(current));
+    });
+  });
+
+  const sections = document.querySelectorAll('section');
+  sections.forEach((s, i) => { s.style.animationDelay = (i * 0.1) + 's'; });
+</script>
+
+</body>
+</html>

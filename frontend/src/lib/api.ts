@@ -1,0 +1,553 @@
+export type DatabricksHealth = {
+  configured: boolean
+  host: string | null
+  warehouse_id: string | null
+  workspace_id: string | null
+  sql_reachable: boolean | null
+  server_time_utc: string | null
+  catalogs_sample: string[] | null
+  last_error: string | null
+}
+
+export type HealthResponse = {
+  status: string
+  service: string
+  databricks: DatabricksHealth
+}
+
+export type OverviewResponse = {
+  generated_at: string
+  environment: string
+  data_mode: string
+  agents_monitored: number
+  requests_24h: number
+  requests_24h_source: string
+  error_rate_pct: number
+  est_monthly_cost_usd: number | null
+  quality_score_avg: number | null
+  databricks_sql_reachable: boolean | null
+  inference_setup_hint: string | null
+  count_7d: number | null
+  gateway_tokens_24h: number | null
+  gateway_tokens_7d: number | null
+  gateway_usage_error: string | null
+}
+
+export type AgentSummary = {
+  id: string
+  name: string
+  status: string
+  rpm: number
+  p95_latency_ms: number
+  error_rate_pct: number
+  source?: string
+  agent_key?: string | null
+}
+
+async function parseJson<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(text || `Request failed: ${res.status}`)
+  }
+  return res.json() as Promise<T>
+}
+
+export async function fetchHealth(): Promise<HealthResponse> {
+  const res = await fetch('/api/health')
+  return parseJson<HealthResponse>(res)
+}
+
+export async function fetchOverview(): Promise<OverviewResponse> {
+  const res = await fetch('/api/v1/overview')
+  return parseJson<OverviewResponse>(res)
+}
+
+export async function fetchAgents(): Promise<AgentSummary[]> {
+  const res = await fetch('/api/v1/agents')
+  return parseJson<AgentSummary[]>(res)
+}
+
+export async function fetchInferenceDiagnostics(): Promise<Record<string, unknown>> {
+  const res = await fetch('/api/v1/inference/diagnostics')
+  return parseJson<Record<string, unknown>>(res)
+}
+
+// --- Analytics ---
+
+export type TimeseriesBucket = {
+  bucket: string
+  requests: number
+  errors: number
+}
+
+export type HealthTimeseriesResponse = {
+  hours: number
+  buckets: TimeseriesBucket[]
+  error: string | null
+}
+
+export type SloRollup = {
+  id: string
+  name: string
+  requests_24h: number
+  rpm: number
+  p95_latency_ms: number
+  error_rate_pct: number
+  group_column?: string
+}
+
+export type HealthSloResponse = {
+  p95_target_ms: number
+  error_budget_pct: number
+  global_p95_ms: number | null
+  global_error_rate_pct: number | null
+  agents_breaching_p95: number
+  agents_over_error_budget: number
+  rollups: SloRollup[]
+  error: string | null
+}
+
+export type CostByDest = {
+  destination: string
+  requests: number
+  est_tokens: number
+}
+
+export type CostHourly = {
+  bucket: string
+  est_tokens: number
+}
+
+export type AiGatewayCostByModel = {
+  model: string
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+}
+
+export type AiGatewayCostSummary = {
+  hours: number
+  total_requests: number | null
+  total_input_tokens: number | null
+  total_output_tokens: number | null
+  total_tokens: number | null
+  by_model: AiGatewayCostByModel[]
+  error: string | null
+  note: string
+  gateway_model_filter?: string | null
+}
+
+export type BillingEndpointRow = {
+  sku_name: string
+  endpoint_name: string
+  dbu: number
+  usd_per_dbu: number | null
+  list_usd: number | null
+}
+
+export type BillingCostSummary = {
+  hours: number
+  total_dbu: number | null
+  total_list_usd: number | null
+  currency_code: string
+  by_endpoint: BillingEndpointRow[]
+  pricing_partial: boolean
+  error: string | null
+  note: string
+}
+
+export type CostSummaryResponse = {
+  hours: number
+  method: string
+  note: string
+  total_est_tokens: number | null
+  by_destination: CostByDest[]
+  hourly: CostHourly[]
+  error: string | null
+  ai_gateway?: AiGatewayCostSummary | null
+  billing?: BillingCostSummary | null
+  token_primary_source?: string | null
+  filter?: {
+    source_table: string | null
+    gateway_model: string | null
+    resolved_fqn: string | null
+  } | null
+}
+
+export type TraceRow = {
+  request_id: string | null
+  event_time: string
+  status_code: number | null
+  latency_ms: number | null
+  destination_id: string | null
+  url: string | null
+  api_type: string | null
+  requester: string | null
+  request_preview: string | null
+  response_preview: string | null
+  comparison_group_id?: string | null
+}
+
+export type TracesListResponse = {
+  traces: TraceRow[]
+  error: string | null
+}
+
+export type ComparisonRow = {
+  request_id: string | null
+  event_time: string | null
+  destination_id: string | null
+  model_or_destination: string | null
+  status_code: unknown
+  latency_ms: unknown
+  input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  est_list_usd_prorated: number | null
+  ai_gateway_usage: Record<string, unknown> | null
+}
+
+export type ComparisonGroupResponse = {
+  group_id?: string
+  error?: string
+  rows: ComparisonRow[]
+  comparison_column?: string
+  tokens_sum_gateway?: number | null
+  billing_window?: Record<string, unknown>
+  ai_gateway_batch_error?: string | null
+  note?: string
+}
+
+export type ReplayTargetInfo = {
+  id: string
+  label: string
+}
+
+export type ReplayTargetsResponse = {
+  targets: ReplayTargetInfo[]
+}
+
+export type ReplayResultRow = {
+  target_id: string
+  label: string
+  status_code: number | null
+  latency_ms: number
+  usage: { input_tokens?: unknown; output_tokens?: unknown; total_tokens?: unknown } | null
+  error: string | null
+}
+
+export type ReplayRunResponse = {
+  request_id?: string
+  error?: string | null
+  results: ReplayResultRow[]
+}
+
+export type BenchmarkResultRow = {
+  target_id: string
+  label: string
+  status_code: number | null
+  latency_ms: number
+  usage: { input_tokens?: unknown; output_tokens?: unknown; total_tokens?: unknown } | null
+  response_preview?: string | null
+  error: string | null
+}
+
+export type BenchmarkPromptResponse = {
+  error?: string | null
+  hint?: string
+  note?: string
+  results: BenchmarkResultRow[]
+}
+
+export async function postBenchmarkPrompt(body: {
+  messages: { role: string; content: string }[]
+  max_tokens?: number
+  temperature?: number
+  target_ids?: string[]
+}): Promise<BenchmarkPromptResponse> {
+  const res = await fetch('/api/v1/benchmark/prompt', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return parseJson<BenchmarkPromptResponse>(res)
+}
+
+export type LineageGraphNode = {
+  id: string
+  title: string
+  detail: string
+  kind: string
+}
+
+export type LineageGraph = {
+  nodes: LineageGraphNode[]
+  edges: { from: string; to: string }[]
+}
+
+export type TraceDetailResponse = {
+  request_id?: string
+  comparison_group_id?: string | null
+  error?: string
+  record?: Record<string, unknown>
+  request_json?: unknown
+  response_json?: unknown
+  reasoning_summary?: string | null
+  internal_lineage?: { step: string; detail: string }[]
+  lineage_graph?: LineageGraph | null
+  ai_gateway_usage?: Record<string, unknown> | null
+  ai_gateway_usage_error?: string | null
+}
+
+export type QualityObservabilityResponse = {
+  window_hours: number
+  avg_latency_ms: number | null
+  p50_latency_ms: number | null
+  p95_latency_ms: number | null
+  error_rate_pct: number | null
+  requests_sampled_for_json: number
+  responses_with_reasoning_pct: number | null
+  error: string | null
+}
+
+export type QualityTrendPoint = {
+  day: string
+  avg_latency_ms: number
+  error_rate_pct: number
+}
+
+export type QualityTrendResponse = {
+  days: number
+  points: QualityTrendPoint[]
+  error: string | null
+}
+
+export type LineageNode = {
+  id: string
+  label: string
+  fqn: string
+}
+
+export type LineageEdge = {
+  source: string | null
+  target: string | null
+  entity_type: string | null
+  created_by: string | null
+  event_time: string
+}
+
+export type RuntimeFlowRoute = {
+  destination_id: string | null
+  url: string | null
+  api_type: string | null
+  requests: number
+}
+
+export type RuntimeFlowModel = {
+  model: string | null
+  requests: number
+}
+
+export type RuntimeFlowResponse = {
+  window_days: number
+  distinct_callers: number | null
+  total_requests: number | null
+  routes: RuntimeFlowRoute[]
+  models: RuntimeFlowModel[]
+  error: string | null
+  note?: string | null
+}
+
+export type GovernanceLineageResponse = {
+  inference_table: string | null
+  inference_table_fqns?: string[] | null
+  inference_table_primary?: string | null
+  inference_table_display?: string | null
+  edges: LineageEdge[]
+  nodes: LineageNode[]
+  error: string | null
+  hint: string
+  runtime_flow: RuntimeFlowResponse
+  system_tables_doc_url: string
+  lineage_system_table_doc_url: string
+  uc_lineage_query_error: string | null
+  workspace_lineage_recent?: LineageEdge[]
+  workspace_lineage_note?: string
+  workspace_lineage_recent_error?: string | null
+}
+
+export type MlflowRunRow = {
+  run_id: string | null
+  experiment_id: string | null
+  run_name: string | null
+  status: string | null
+  start_time: string
+  created_by: string | null
+}
+
+export type MlflowExperimentRow = {
+  experiment_id: string | null
+  name: string | null
+}
+
+export type MlflowOverviewResponse = {
+  workspace_id_filter: string | null
+  experiments_count: number | null
+  runs_count: number | null
+  experiments_sample: MlflowExperimentRow[]
+  recent_runs: MlflowRunRow[]
+  error: string | null
+  doc_url: string
+}
+
+export type GovernanceAuditEvent = {
+  request_id: string | null
+  event_time: string
+  requester: string | null
+  status_code: number | null
+  latency_ms: number | null
+  destination_id: string | null
+}
+
+export type GovernanceAuditResponse = {
+  events: GovernanceAuditEvent[]
+  error: string | null
+}
+
+export async function fetchAgentsCatalog(): Promise<AgentsCatalogResponse> {
+  const res = await fetch('/api/v1/agents/catalog')
+  return parseJson<AgentsCatalogResponse>(res)
+}
+
+export type AgentCatalogEntry = {
+  key: string
+  kind: string
+  label: string
+  fqn?: string
+  gateway_model?: string
+  requests_preview?: number
+  total_tokens_preview?: number
+}
+
+export type AgentsCatalogResponse = {
+  agents: AgentCatalogEntry[]
+  payload_table_count?: number
+  gateway_distinct_models?: number
+  fqns_note?: string | null
+  gateway_error?: string | null
+  gateway_hours_sampled?: number | null
+  error?: string | null
+}
+
+export type AnalyticsAgentOpts = {
+  agent?: string | null
+  /** When set, repeated as `agents=` query params (combined Cost/Traces). */
+  agents?: string[] | null
+  /** URL `task` / pinned request — narrows cost summary to this request_id. */
+  task?: string | null
+  requestId?: string | null
+}
+
+function appendAnalyticsScope(q: URLSearchParams, opts?: AnalyticsAgentOpts) {
+  if (opts?.agents?.length) {
+    for (const a of opts.agents) {
+      if (a) q.append('agents', a)
+    }
+  } else if (opts?.agent) {
+    q.set('agent', opts.agent)
+  }
+  const rid = (opts?.task?.trim() || opts?.requestId?.trim()) ?? ''
+  if (rid) q.set('task', rid)
+}
+
+export async function fetchHealthTimeseries(
+  hours = 168,
+  opts?: AnalyticsAgentOpts,
+): Promise<HealthTimeseriesResponse> {
+  const q = new URLSearchParams({ hours: String(hours) })
+  appendAnalyticsScope(q, opts)
+  const res = await fetch(`/api/v1/analytics/health/timeseries?${q}`)
+  return parseJson<HealthTimeseriesResponse>(res)
+}
+
+export async function fetchHealthSlo(
+  p95TargetMs = 2000,
+  errorBudgetPct = 1,
+  opts?: AnalyticsAgentOpts,
+): Promise<HealthSloResponse> {
+  const q = new URLSearchParams({
+    p95_target_ms: String(p95TargetMs),
+    error_budget_pct: String(errorBudgetPct),
+  })
+  appendAnalyticsScope(q, opts)
+  const res = await fetch(`/api/v1/analytics/health/slo?${q}`)
+  return parseJson<HealthSloResponse>(res)
+}
+
+export async function fetchCostSummary(
+  hours = 168,
+  opts?: AnalyticsAgentOpts,
+): Promise<CostSummaryResponse> {
+  const q = new URLSearchParams({ hours: String(hours) })
+  appendAnalyticsScope(q, opts)
+  const res = await fetch(`/api/v1/analytics/cost/summary?${q}`)
+  return parseJson<CostSummaryResponse>(res)
+}
+
+export async function fetchTraces(limit = 40, opts?: AnalyticsAgentOpts): Promise<TracesListResponse> {
+  const q = new URLSearchParams({ limit: String(limit) })
+  appendAnalyticsScope(q, opts)
+  const res = await fetch(`/api/v1/analytics/traces?${q}`)
+  return parseJson<TracesListResponse>(res)
+}
+
+export async function fetchTraceDetail(requestId: string): Promise<TraceDetailResponse> {
+  const res = await fetch(`/api/v1/analytics/traces/${encodeURIComponent(requestId)}`)
+  return parseJson<TraceDetailResponse>(res)
+}
+
+export async function fetchComparisonGroup(groupId: string): Promise<ComparisonGroupResponse> {
+  const q = new URLSearchParams({ group_id: groupId })
+  const res = await fetch(`/api/v1/analytics/comparison?${q}`)
+  return parseJson<ComparisonGroupResponse>(res)
+}
+
+export async function fetchReplayTargets(): Promise<ReplayTargetsResponse> {
+  const res = await fetch('/api/v1/replay/targets')
+  return parseJson<ReplayTargetsResponse>(res)
+}
+
+export async function postReplayRun(requestId: string, targetIds?: string[]): Promise<ReplayRunResponse> {
+  const res = await fetch('/api/v1/replay/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ request_id: requestId, target_ids: targetIds ?? null }),
+  })
+  return parseJson<ReplayRunResponse>(res)
+}
+
+export async function fetchQualityObservability(): Promise<QualityObservabilityResponse> {
+  const res = await fetch('/api/v1/analytics/quality/observability')
+  return parseJson<QualityObservabilityResponse>(res)
+}
+
+export async function fetchQualityTrend(days = 14): Promise<QualityTrendResponse> {
+  const res = await fetch(`/api/v1/analytics/quality/trend?days=${days}`)
+  return parseJson<QualityTrendResponse>(res)
+}
+
+export async function fetchGovernanceLineage(limit = 80): Promise<GovernanceLineageResponse> {
+  const res = await fetch(`/api/v1/analytics/governance/lineage?limit=${limit}`)
+  return parseJson<GovernanceLineageResponse>(res)
+}
+
+export async function fetchMlflowOverview(limit = 20): Promise<MlflowOverviewResponse> {
+  const res = await fetch(`/api/v1/analytics/mlflow/overview?limit=${limit}`)
+  return parseJson<MlflowOverviewResponse>(res)
+}
+
+export async function fetchGovernanceAudit(limit = 40): Promise<GovernanceAuditResponse> {
+  const res = await fetch(`/api/v1/analytics/governance/audit?limit=${limit}`)
+  return parseJson<GovernanceAuditResponse>(res)
+}
