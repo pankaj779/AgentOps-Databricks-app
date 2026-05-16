@@ -79,6 +79,14 @@ export function CostView() {
   const total = data?.total_est_tokens
   const bill = data?.billing
   const gw = data?.ai_gateway
+  const billAttr = bill?.attribution
+
+  const listPriceSubtitle =
+    billAttr === 'endpoint_filtered'
+      ? 'Scoped — gateway/log labels → billing endpoint_name (fuzzy LIKE)'
+      : billAttr === 'endpoint_unmatched'
+        ? 'Scope on, but no billing rows matched — check note below'
+        : 'Workspace — all MODEL_SERVING TOKEN endpoints in window'
 
   const costLooksEmpty = useMemo(() => {
     if (!data) return false
@@ -103,8 +111,8 @@ export function CostView() {
       <Card title="Cost & tokens">
         {task?.trim() ? (
           <p className="mb-3 text-xs text-[var(--color-teal)]">
-            Pinned request <span className="font-mono">{task.trim()}</span> — gateway tokens and payload charts match this
-            request when IDs align. List price / DBU below are still workspace-wide.
+            Pinned request <span className="font-mono">{task.trim()}</span> — gateway totals, payload charts, and list
+            price (when we can match gateway/log labels to billing) follow this call.
           </p>
         ) : null}
         {agents.length ? (
@@ -162,7 +170,7 @@ export function CostView() {
             <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
               List price (est.)
             </div>
-            <div className="mt-0.5 text-[10px] text-[var(--color-muted)]">Workspace · not narrowed by agent</div>
+            <div className="mt-0.5 text-[10px] text-[var(--color-muted)]">{listPriceSubtitle}</div>
             <div className="mt-1 text-2xl font-semibold tabular-nums text-[var(--color-fg)]">
               {bill && !bill.error && bill.total_list_usd != null
                 ? `${bill.currency_code} ${bill.total_list_usd.toFixed(4)}`
@@ -173,7 +181,7 @@ export function CostView() {
             <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
               Model serving DBU
             </div>
-            <div className="mt-0.5 text-[10px] text-[var(--color-muted)]">Workspace · not narrowed by agent</div>
+            <div className="mt-0.5 text-[10px] text-[var(--color-muted)]">{listPriceSubtitle}</div>
             <div className="mt-1 text-2xl font-semibold tabular-nums text-[var(--color-fg)]">
               {bill && !bill.error && bill.total_dbu != null ? bill.total_dbu.toFixed(6) : '—'}
             </div>
@@ -208,7 +216,10 @@ export function CostView() {
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card title="Hourly payload size (proxy)">
+        <Card
+          title="Hourly payload size (proxy)"
+          subtitle="Inference logs only: sum of proxy tokens per hour (agent scope + pinned task). Not gateway metering."
+        >
           {hourlyChart.length === 0 ? (
             <p className="text-sm text-[var(--color-muted)]">No hourly data.</p>
           ) : (
@@ -241,7 +252,10 @@ export function CostView() {
           )}
         </Card>
 
-        <Card title="By destination (proxy)">
+        <Card
+          title="By destination (proxy)"
+          subtitle="Groups by payload table / destination column in agent logs — same scope as hourly. Differs from Gateway tokens when using char/4 proxy."
+        >
           {barData.length === 0 ? (
             <p className="text-sm text-[var(--color-muted)]">No rollups.</p>
           ) : (

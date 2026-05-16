@@ -158,6 +158,8 @@ export type BillingCostSummary = {
   pricing_partial: boolean
   error: string | null
   note: string
+  attribution?: string
+  endpoint_match_terms?: string[] | null
 }
 
 export type CostSummaryResponse = {
@@ -178,6 +180,7 @@ export type CostSummaryResponse = {
     gateway_models?: string[] | null
     request_id?: string | null
     gateway_destination_ids_derived?: string[] | null
+    billing_endpoint_terms?: string[] | null
     resolved_fqn: string | null
   } | null
 }
@@ -242,6 +245,7 @@ export type ReplayTargetsResponse = {
     raw_length?: number
     parse_error?: string
     hint?: string
+    load_notes?: string[]
   }
 }
 

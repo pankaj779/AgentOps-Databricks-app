@@ -256,8 +256,15 @@ export function TraceDetailPage() {
               ) : null}
               <p className="mt-2 text-[10px] text-[var(--color-muted)]">
                 Source: {replayTargets.diagnostics.configured_from ?? '—'} (raw {replayTargets.diagnostics.raw_length ?? 0}{' '}
-                chars). Tip: set <code className="text-[var(--color-fg)]">AGENTOPS_REPLAY_TARGETS_FILE</code> to a json
-                file under <code className="text-[var(--color-fg)]">backend/</code> (see{' '}
+                chars).
+                {replayTargets.diagnostics.load_notes?.length ? (
+                  <>
+                    {' '}
+                    Load notes: {replayTargets.diagnostics.load_notes.join(' · ')}
+                  </>
+                ) : null}{' '}
+                Tip: set <code className="text-[var(--color-fg)]">AGENTOPS_REPLAY_TARGETS_FILE</code> to a json file under{' '}
+                <code className="text-[var(--color-fg)]">backend/</code> (see{' '}
                 <code className="text-[var(--color-fg)]">replay_targets.example.json</code>).
               </p>
             </div>

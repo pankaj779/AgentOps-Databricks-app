@@ -484,6 +484,108 @@ def comparison_group_detail(group_id: str) -> dict[str, Any]:
     }
 
 
+def _collect_billing_endpoint_match_terms(*labels: str) -> list[str]:
+    """Tokens for fuzzy-matching Databricks billing.usage endpoint_name (e.g. databricks-qwen35-122b-a10b)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    stop = {
+        "the",
+        "and",
+        "for",
+        "api",
+        "v1",
+        "chat",
+        "model",
+        "text",
+        "instruct",
+        "completion",
+        "openai",
+        "mlflow",
+    }
+
+    def add(tok: str) -> None:
+        t = tok.strip().lower()
+        if len(t) < 2 or t in stop:
+            return
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+
+    for label in labels:
+        if not label or not str(label).strip():
+            continue
+        raw = str(label).strip()
+        s = re.sub(r"[^a-zA-Z0-9]+", " ", raw.lower()).strip()
+        for tok in s.split():
+            add(tok)
+        compact = re.sub(r"[^a-z0-9]+", "", raw.lower())
+        if 4 <= len(compact) <= 48:
+            add(compact)
+    return out[:24]
+
+
+def _sql_billing_endpoint_like_clause(terms: list[str]) -> str:
+    """Extra WHERE fragment on usage_metadata.endpoint_name."""
+    if not terms:
+        return " AND 1=0 "
+    ep_expr = (
+        "LOWER(COALESCE(NULLIF(TRIM(CAST(usage_metadata.endpoint_name AS STRING)), ''), '(none)'))"
+    )
+    parts: list[str] = []
+    for t in terms[:20]:
+        safe = "".join(c for c in t.lower() if c.isalnum() or c in "-_")[:48]
+        if len(safe) < 2:
+            continue
+        esc = safe.replace("'", "''")
+        parts.append(f"{ep_expr} LIKE LOWER(CONCAT('%', '{esc}', '%'))")
+    if not parts:
+        return " AND 1=0 "
+    return " AND (" + " OR ".join(parts) + ") "
+
+
+def _resolve_billing_terms_for_pinned_request(ctx: dict[str, Any] | None, rid: str) -> list[str]:
+    """Gateway usage row first; else parse model name from inference response JSON for this request_id."""
+    gw_row, _ = _fetch_ai_gateway_usage_row(rid)
+    if gw_row:
+        labels: list[str] = []
+        for k in ("destination_model", "destination_name"):
+            v = gw_row.get(k)
+            if v and str(v).strip():
+                labels.append(str(v).strip())
+        if labels:
+            return _collect_billing_endpoint_match_terms(*labels)
+    if not ctx:
+        return []
+    cmap = {c.lower(): c for c in ctx["cols"]}
+    if "request_id" not in cmap or "response" not in cmap:
+        return []
+    tbl = ctx["table_sql"]
+    rq = cmap["request_id"]
+    rsp = cmap["response"]
+    esc = rid.replace("'", "''")
+    sql = f"SELECT CAST(`{rsp}` AS STRING) AS r FROM {tbl} WHERE CAST(`{rq}` AS STRING) = '{esc}' LIMIT 1"
+    try:
+        with sql_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(sql)
+            row = cur.fetchone()
+        if not row or row[0] is None:
+            return []
+        txt = str(row[0])
+        if not txt.strip():
+            return []
+        try:
+            parsed = json.loads(txt)
+        except json.JSONDecodeError:
+            return []
+        mname = _response_model_name(parsed)
+        if mname:
+            return _collect_billing_endpoint_match_terms(mname)
+    except Exception:  # noqa: BLE001
+        return []
+    return []
+
+
 def _usd_per_dbu_from_pricing_json(pricing_raw: Any) -> float | None:
     if pricing_raw is None:
         return None
@@ -504,10 +606,21 @@ def _usd_per_dbu_from_pricing_json(pricing_raw: Any) -> float | None:
     return None
 
 
-def billing_model_serving_cost(hours: int) -> dict[str, Any]:
-    """List-price USD from MODEL_SERVING TOKEN rows (DBU) * list_prices."""
+def billing_model_serving_cost(
+    hours: int,
+    *,
+    endpoint_match_terms: list[str] | None = None,
+) -> dict[str, Any]:
+    """List-price USD from MODEL_SERVING TOKEN rows (DBU) * list_prices.
+
+    endpoint_match_terms:
+      None  — workspace-wide (all MODEL_SERVING endpoints in window).
+      []    — caller scoped cost but no endpoint tokens derived → return zeros (no false workspace rollup).
+      [...] — OR of LIKE filters on usage_metadata.endpoint_name.
+    """
     ws = get_settings().workspace_id.strip()
     h = max(1, min(24 * 90, int(hours)))
+    scoped = endpoint_match_terms is not None
     out: dict[str, Any] = {
         "hours": h,
         "total_dbu": None,
@@ -516,6 +629,10 @@ def billing_model_serving_cost(hours: int) -> dict[str, Any]:
         "by_endpoint": [],
         "pricing_partial": False,
         "error": None,
+        "attribution": "endpoint_unmatched" if scoped and not endpoint_match_terms else (
+            "endpoint_filtered" if scoped else "workspace"
+        ),
+        "endpoint_match_terms": list(endpoint_match_terms) if scoped else None,
         "note": (
             "Estimate: system.billing.usage (usage_type=TOKEN, MODEL_SERVING) times "
             "effective_list price in system.billing.list_prices. Not an invoice; excludes discounts."
@@ -525,6 +642,7 @@ def billing_model_serving_cost(hours: int) -> dict[str, Any]:
         out["error"] = "set DATABRICKS_WORKSPACE_ID (digits) for billing.usage"
         return out
     wpred = f"workspace_id = {int(ws)}"
+    ep_extra = _sql_billing_endpoint_like_clause(endpoint_match_terms) if scoped else ""
     sql_agg = (
         "SELECT sku_name, "
         "COALESCE(NULLIF(TRIM(CAST(usage_metadata.endpoint_name AS STRING)), ''), "
@@ -535,6 +653,7 @@ def billing_model_serving_cost(hours: int) -> dict[str, Any]:
         f"AND usage_start_time >= current_timestamp() - INTERVAL {h} HOURS "
         "AND usage_type = 'TOKEN' "
         "AND billing_origin_product = 'MODEL_SERVING' "
+        f"{ep_extra}"
         "GROUP BY 1, 2 "
         "ORDER BY dbu DESC NULLS LAST"
     )
@@ -543,7 +662,7 @@ def billing_model_serving_cost(hours: int) -> dict[str, Any]:
             cur = conn.cursor()
             cur.execute(sql_agg)
             agg_rows = cur.fetchall() or []
-            if not agg_rows:
+            if not agg_rows and not scoped:
                 sql_broad = (
                     "SELECT sku_name, "
                     "COALESCE(NULLIF(TRIM(CAST(usage_metadata.endpoint_name AS STRING)), ''), "
@@ -566,10 +685,22 @@ def billing_model_serving_cost(hours: int) -> dict[str, Any]:
             out["total_dbu"] = 0.0
             out["total_list_usd"] = 0.0
             out["by_endpoint"] = []
-            out["note"] += (
-                " If zero while AI Gateway shows traffic: billing.usage can lag 24–48h, rows may use another "
-                "billing_origin_product, or DATABRICKS_WORKSPACE_ID may not match system.billing rows."
-            )
+            if scoped:
+                if endpoint_match_terms:
+                    out["note"] += (
+                        " Scoped list-price filter matched no billing rows in this window "
+                        "(endpoint names may differ from gateway labels, or billing lags traffic)."
+                    )
+                else:
+                    out["note"] += (
+                        " Cost scope active but no tokens derived to match billing endpoint_name "
+                        "(need AI Gateway usage or a parseable response.model in logs)."
+                    )
+            else:
+                out["note"] += (
+                    " If zero while AI Gateway shows traffic: billing.usage can lag 24–48h, rows may use another "
+                    "billing_origin_product, or DATABRICKS_WORKSPACE_ID may not match system.billing rows."
+                )
             return out
 
         skus: list[str] = []
@@ -618,6 +749,12 @@ def billing_model_serving_cost(hours: int) -> dict[str, Any]:
         out["pricing_partial"] = any(x.get("usd_per_dbu") is None for x in by_ep)
         if out["pricing_partial"]:
             out["note"] += " Partial: missing list price for some SKUs."
+        if scoped and endpoint_match_terms:
+            out["attribution"] = "endpoint_filtered"
+            out["note"] += (
+                " List price rows below are filtered by gateway/log model labels vs billing endpoint_name "
+                "(fuzzy match; verify in system.billing.usage)."
+            )
         out["by_endpoint"] = by_ep
     except Exception as e:  # noqa: BLE001
         out["error"] = str(e).strip()[:500]
@@ -1256,7 +1393,23 @@ def cost_summary(
     else:
         ag = ai_gateway_usage_rollup(hours)
 
-    bill = billing_model_serving_cost(hours)
+    has_focus = bool(rid or st_eff or gw_eff or (source_table and str(source_table).strip()))
+    billing_terms_param: list[str] | None = None
+    if has_focus:
+        if rid:
+            billing_terms_param = _resolve_billing_terms_for_pinned_request(ctx if (ctx and not err) else None, rid)
+        else:
+            bm = (ag or {}).get("by_model") or []
+            labs = [str(x.get("model") or "") for x in bm if x.get("model")]
+            if labs:
+                billing_terms_param = _collect_billing_endpoint_match_terms(*labs)
+            else:
+                billing_terms_param = []
+
+    bill = billing_model_serving_cost(
+        hours,
+        endpoint_match_terms=billing_terms_param if has_focus else None,
+    )
     out: dict[str, Any] = {
         "hours": int(hours),
         "method": "char_length_over_4_proxy",
@@ -1275,6 +1428,7 @@ def cost_summary(
             "gateway_models": gw_eff,
             "request_id": rid,
             "gateway_destination_ids_derived": derived_gateway_destination_ids,
+            "billing_endpoint_terms": billing_terms_param if has_focus else None,
             "resolved_fqn": resolve_source_table_fqn(source_table) if source_table else None,
         },
     }
@@ -1374,10 +1528,11 @@ def cost_summary(
             + " Inference proxy has no request/response or token columns — hourly/destination use counts only; "
             "prefer AI Gateway totals for tokens."
         ).strip()
-    if rid or gw_eff or derived_gateway_destination_ids or st_eff or (source_table and str(source_table).strip()):
+    if has_focus:
         out["note"] = (
             (out.get("note") or "")
-            + " List price and DBU come from workspace billing tables; gateway tokens and payload proxy follow the focus scope above."
+            + " Payload charts = inference proxy (char/4 or log token columns), not AI Gateway metering — totals can "
+            "differ from Gateway tokens. List price uses billing.usage when scope is active."
         ).strip()
     if not ag.get("error") and (ag.get("total_tokens") or 0) > 0:
         out["token_primary_source"] = "ai_gateway"

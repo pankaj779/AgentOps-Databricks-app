@@ -24,26 +24,33 @@ class ReplayTargetSpec(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
 
 
-def _replay_targets_json_raw() -> tuple[str, str]:
-    """Load JSON text from file (if set) else env; return (raw, source_description)."""
+def _replay_targets_json_raw() -> tuple[str, str, list[str]]:
+    """Return (raw_json, primary_source_label, notes). File is tried first; env JSON used if file missing/empty."""
     s = get_settings()
+    notes: list[str] = []
     fpath = (s.replay_targets_file or "").strip()
     if fpath:
         p = Path(fpath)
         if not p.is_absolute():
             p = _BACKEND_DIR / p
-        try:
-            if p.is_file():
-                return p.read_text(encoding="utf-8").strip(), str(p)
-        except OSError:
-            return "", f"unreadable_file:{p}"
-        return "", f"missing_file:{p}"
+        if p.is_file():
+            try:
+                txt = p.read_text(encoding="utf-8").strip()
+                if txt:
+                    return txt, str(p), notes
+                notes.append(f"empty_file:{p}")
+            except OSError as e:
+                notes.append(f"read_error:{p}:{e}")
+        else:
+            notes.append(f"missing_file:{p}")
     raw = (s.replay_targets_json or "").strip()
     if raw.startswith("\ufeff"):
         raw = raw.lstrip("\ufeff")
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
         raw = raw[1:-1].strip()
-    return raw, "AGENTOPS_REPLAY_TARGETS_JSON"
+    if raw:
+        return raw, "AGENTOPS_REPLAY_TARGETS_JSON", notes
+    return "", "none", notes
 
 
 def _parse_replay_targets_list(raw: str) -> tuple[list[ReplayTargetSpec], str | None]:
@@ -69,33 +76,33 @@ def _parse_replay_targets_list(raw: str) -> tuple[list[ReplayTargetSpec], str | 
 
 
 def load_replay_targets() -> list[ReplayTargetSpec]:
-    raw, _src = _replay_targets_json_raw()
+    raw, _src, _notes = _replay_targets_json_raw()
     targets, _err = _parse_replay_targets_list(raw)
     return targets
 
 
 def replay_targets_public() -> dict[str, Any]:
-    raw, src = _replay_targets_json_raw()
+    raw, src, load_notes = _replay_targets_json_raw()
     targets, parse_err = _parse_replay_targets_list(raw)
     out: dict[str, Any] = {
         "targets": [{"id": t.id, "label": t.label} for t in targets],
     }
     if not targets:
-        diag: dict[str, Any] = {"configured_from": src, "raw_length": len(raw)}
+        diag: dict[str, Any] = {"configured_from": src, "raw_length": len(raw), "load_notes": load_notes}
         if parse_err:
             diag["parse_error"] = parse_err
         if not raw.strip():
             diag["hint"] = (
-                "Set AGENTOPS_REPLAY_TARGETS_JSON (single-line JSON array) or "
-                "AGENTOPS_REPLAY_TARGETS_FILE pointing at a .json file (easier on Windows)."
+                "Set AGENTOPS_REPLAY_TARGETS_JSON (single-line JSON) and/or AGENTOPS_REPLAY_TARGETS_FILE "
+                "(path under backend/, e.g. replay_targets.json — copy from replay_targets.example.json)."
             )
         elif parse_err:
             diag["hint"] = (
-                "Fix JSON syntax or move the array to backend/replay_targets.json and set "
+                "Fix JSON syntax. On Windows use a file: create backend/replay_targets.json and set "
                 "AGENTOPS_REPLAY_TARGETS_FILE=replay_targets.json"
             )
         else:
-            diag["hint"] = "Parsed JSON but no valid targets (require id, label, url per object)."
+            diag["hint"] = "Parsed JSON but no valid targets (each object needs id, label, url)."
         out["diagnostics"] = diag
     return out
 
