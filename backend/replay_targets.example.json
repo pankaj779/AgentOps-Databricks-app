@@ -1,0 +1,9 @@
+[
+  {
+    "id": "demo",
+    "label": "Local OpenAI-compatible server",
+    "url": "http://127.0.0.1:8080/v1/chat/completions",
+    "headers": {},
+    "timeout_sec": 120
+  }
+]

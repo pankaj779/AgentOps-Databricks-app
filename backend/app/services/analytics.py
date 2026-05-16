@@ -1483,6 +1483,13 @@ def list_traces(
     else:
         parts.append("CAST(NULL AS STRING) AS comparison_group_id")
 
+    for opt in ("input_tokens", "output_tokens", "total_tokens"):
+        c = col(opt)
+        if c:
+            parts.append(f"CAST(`{c}` AS DOUBLE) AS {opt}")
+        else:
+            parts.append(f"CAST(NULL AS DOUBLE) AS {opt}")
+
     sql = (
         f"SELECT {', '.join(parts)} FROM {tbl} "
         f"WHERE 1=1 {pred_st} {gm_extra} ORDER BY `{tc}` DESC NULLS LAST LIMIT {lim}"
@@ -1494,6 +1501,15 @@ def list_traces(
             rows = cur.fetchall() or []
             colnames = [c[0] for c in cur.description] if cur.description else []
         traces = []
+
+        def _trace_tok(v: Any) -> int | None:
+            if v is None:
+                return None
+            try:
+                return int(round(float(v)))
+            except (TypeError, ValueError):
+                return None
+
         for r in rows:
             rec = dict(zip(colnames, r))
             st = rec.get("status_code")
@@ -1507,6 +1523,7 @@ def list_traces(
             except (TypeError, ValueError):
                 lat_f = None
             ev = rec.get("event_time")
+
             cg = rec.get("comparison_group_id")
             traces.append(
                 {
@@ -1521,6 +1538,9 @@ def list_traces(
                     "request_preview": str(rec["request_preview"]) if rec.get("request_preview") else None,
                     "response_preview": str(rec["response_preview"]) if rec.get("response_preview") else None,
                     "comparison_group_id": str(cg) if cg else None,
+                    "input_tokens": _trace_tok(rec.get("input_tokens")),
+                    "output_tokens": _trace_tok(rec.get("output_tokens")),
+                    "total_tokens": _trace_tok(rec.get("total_tokens")),
                 }
             )
         out["traces"] = traces

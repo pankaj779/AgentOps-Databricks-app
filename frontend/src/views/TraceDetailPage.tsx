@@ -245,6 +245,23 @@ export function TraceDetailPage() {
           title="Live prompt benchmark"
           subtitle="Same question to every replay target — enable AGENTOPS_BENCHMARK_ENABLED=true on the server"
         >
+          {replayTargets?.diagnostics ? (
+            <div className="mb-3 rounded-lg border border-[var(--color-warn-border)] bg-[var(--color-warn-bg)] px-3 py-2 text-[11px] text-[var(--color-warn-fg)]">
+              <strong className="block text-[var(--color-fg)]">Replay targets not loaded</strong>
+              <span className="mt-1 block">{replayTargets.diagnostics.hint}</span>
+              {replayTargets.diagnostics.parse_error ? (
+                <pre className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap font-mono text-[10px] opacity-90">
+                  {replayTargets.diagnostics.parse_error}
+                </pre>
+              ) : null}
+              <p className="mt-2 text-[10px] text-[var(--color-muted)]">
+                Source: {replayTargets.diagnostics.configured_from ?? '—'} (raw {replayTargets.diagnostics.raw_length ?? 0}{' '}
+                chars). Tip: set <code className="text-[var(--color-fg)]">AGENTOPS_REPLAY_TARGETS_FILE</code> to a json
+                file under <code className="text-[var(--color-fg)]">backend/</code> (see{' '}
+                <code className="text-[var(--color-fg)]">replay_targets.example.json</code>).
+              </p>
+            </div>
+          ) : null}
           <p className="mb-2 text-xs text-[var(--color-muted)]">
             Uses OpenAI-style chat JSON. Best for localhost demos with real gateway URLs in replay targets.
           </p>
@@ -362,6 +379,37 @@ export function TraceDetailPage() {
               </summary>
               <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-black/20 p-2 text-[10px]">
                 {JSON.stringify(detail.request_json, null, 2)}
+              </pre>
+            </details>
+          </Card>
+        ) : null}
+
+        {detail?.response_json != null ? (
+          <Card>
+            <details>
+              <summary className="cursor-pointer text-sm font-semibold text-[var(--color-teal)]">
+                Response JSON
+              </summary>
+              <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-black/20 p-2 text-[10px]">
+                {JSON.stringify(detail.response_json, null, 2)}
+              </pre>
+            </details>
+          </Card>
+        ) : detail?.record &&
+          detail.record.response != null &&
+          String(detail.record.response).length > 0 ? (
+          <Card>
+            <details>
+              <summary className="cursor-pointer text-sm font-semibold text-[var(--color-teal)]">
+                Response (raw payload)
+              </summary>
+              <p className="mt-2 text-[11px] text-[var(--color-muted)]">
+                Stored response did not parse as JSON — showing raw text from the log row.
+              </p>
+              <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-black/20 p-2 text-[10px]">
+                {typeof detail.record.response === 'string'
+                  ? detail.record.response.slice(0, 24000)
+                  : JSON.stringify(detail.record.response, null, 2).slice(0, 24000)}
               </pre>
             </details>
           </Card>

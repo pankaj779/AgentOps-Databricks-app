@@ -101,6 +101,12 @@ export function CostView() {
       {data?.error ? <p className="text-sm text-[var(--color-warn-fg)]">{data.error}</p> : null}
 
       <Card title="Cost & tokens">
+        {task?.trim() ? (
+          <p className="mb-3 text-xs text-[var(--color-teal)]">
+            Pinned request <span className="font-mono">{task.trim()}</span> — gateway tokens and payload charts match this
+            request when IDs align. List price / DBU below are still workspace-wide.
+          </p>
+        ) : null}
         {agents.length ? (
           <p className="mb-3 text-xs text-[var(--color-accent)]">
             Filtered view — {agents.length === 1 ? (
@@ -156,6 +162,7 @@ export function CostView() {
             <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
               List price (est.)
             </div>
+            <div className="mt-0.5 text-[10px] text-[var(--color-muted)]">Workspace · not narrowed by agent</div>
             <div className="mt-1 text-2xl font-semibold tabular-nums text-[var(--color-fg)]">
               {bill && !bill.error && bill.total_list_usd != null
                 ? `${bill.currency_code} ${bill.total_list_usd.toFixed(4)}`
@@ -166,6 +173,7 @@ export function CostView() {
             <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
               Model serving DBU
             </div>
+            <div className="mt-0.5 text-[10px] text-[var(--color-muted)]">Workspace · not narrowed by agent</div>
             <div className="mt-1 text-2xl font-semibold tabular-nums text-[var(--color-fg)]">
               {bill && !bill.error && bill.total_dbu != null ? bill.total_dbu.toFixed(6) : '—'}
             </div>
@@ -174,6 +182,7 @@ export function CostView() {
             <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
               Gateway tokens
             </div>
+            <div className="mt-0.5 text-[10px] text-[var(--color-teal)]">Scoped to focus (and task if pinned)</div>
             <div className="mt-1 text-2xl font-semibold tabular-nums text-[var(--color-fg)]">
               {gw && !gw.error && gw.total_tokens != null ? gw.total_tokens.toLocaleString() : '—'}
             </div>
@@ -182,6 +191,7 @@ export function CostView() {
             <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
               Gateway requests
             </div>
+            <div className="mt-0.5 text-[10px] text-[var(--color-teal)]">Scoped to focus (and task if pinned)</div>
             <div className="mt-1 text-2xl font-semibold tabular-nums text-[var(--color-fg)]">
               {gw && !gw.error && gw.total_requests != null ? gw.total_requests.toLocaleString() : '—'}
             </div>

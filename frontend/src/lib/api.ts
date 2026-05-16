@@ -136,6 +136,9 @@ export type AiGatewayCostSummary = {
   error: string | null
   note: string
   gateway_model_filter?: string | null
+  gateway_models_filter?: string[] | null
+  gateway_request_id_filter?: string | null
+  gateway_no_rows?: boolean
 }
 
 export type BillingEndpointRow = {
@@ -171,6 +174,10 @@ export type CostSummaryResponse = {
   filter?: {
     source_table: string | null
     gateway_model: string | null
+    source_tables?: string[] | null
+    gateway_models?: string[] | null
+    request_id?: string | null
+    gateway_destination_ids_derived?: string[] | null
     resolved_fqn: string | null
   } | null
 }
@@ -187,6 +194,10 @@ export type TraceRow = {
   request_preview: string | null
   response_preview: string | null
   comparison_group_id?: string | null
+  /** From inference row when logged; see trace page for AI Gateway metering. */
+  input_tokens?: number | null
+  output_tokens?: number | null
+  total_tokens?: number | null
 }
 
 export type TracesListResponse = {
@@ -226,6 +237,12 @@ export type ReplayTargetInfo = {
 
 export type ReplayTargetsResponse = {
   targets: ReplayTargetInfo[]
+  diagnostics?: {
+    configured_from?: string
+    raw_length?: number
+    parse_error?: string
+    hint?: string
+  }
 }
 
 export type ReplayResultRow = {

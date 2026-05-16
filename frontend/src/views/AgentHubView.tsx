@@ -79,6 +79,13 @@ export function AgentHubView() {
     navigate({ pathname: NAV_PATHS.quality, search: n.toString() })
   }
 
+  const costHrefForTask = (rid: string | null) => {
+    if (!rid) return { pathname: NAV_PATHS.cost, search: location.search || '' }
+    const n = new URLSearchParams(location.search)
+    n.set('task', rid)
+    return { pathname: NAV_PATHS.cost, search: n.toString() }
+  }
+
   const qs = location.search || ''
 
   return (
@@ -197,7 +204,7 @@ export function AgentHubView() {
       ) : (
         <Card
           title="Request list"
-          subtitle="Traces respect the scoped agents above (OR). Open a row for token & cost detail."
+          subtitle="Scoped agents above (OR). Tokens come from the log row when columns exist; open Cost ▾ to pin a task for gateway-scoped totals."
         >
           {!agents.length ? (
             <p className="text-sm text-[var(--color-warn-fg)]">
@@ -212,6 +219,7 @@ export function AgentHubView() {
                   <tr>
                     <th className="pb-2 pr-3">Time</th>
                     <th className="pb-2 pr-3">Request</th>
+                    <th className="pb-2 pr-3">Tokens (log)</th>
                     <th className="pb-2 pr-3">Status</th>
                     <th className="pb-2 pr-3">ms</th>
                     <th className="pb-2">Detail</th>
@@ -220,7 +228,7 @@ export function AgentHubView() {
                 <tbody className="divide-y divide-[var(--color-border)]">
                   {(traces?.traces ?? []).length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="py-8 text-center text-[var(--color-muted)]">
+                      <td colSpan={6} className="py-8 text-center text-[var(--color-muted)]">
                         No traces for this combined scope in the last window.
                       </td>
                     </tr>
@@ -233,6 +241,18 @@ export function AgentHubView() {
                         <td className="max-w-[200px] truncate py-2 pr-3 font-mono text-[10px]">
                           {t.request_id ?? '—'}
                         </td>
+                        <td className="py-2 pr-3 font-mono text-[10px] tabular-nums">
+                          {t.total_tokens != null ? (
+                            <span title="From inference table columns">{t.total_tokens}</span>
+                          ) : (
+                            <span className="text-[var(--color-muted)]">—</span>
+                          )}
+                          {t.input_tokens != null || t.output_tokens != null ? (
+                            <span className="mt-0.5 block text-[9px] text-[var(--color-muted)]">
+                              in {t.input_tokens ?? '—'} · out {t.output_tokens ?? '—'}
+                            </span>
+                          ) : null}
+                        </td>
                         <td className="py-2 pr-3">
                           <Badge tone={t.status_code != null && t.status_code >= 400 ? 'warn' : 'teal'}>
                             {t.status_code ?? '—'}
@@ -243,6 +263,13 @@ export function AgentHubView() {
                         </td>
                         <td className="py-2 pr-3">
                           <div className="flex flex-wrap gap-2">
+                            <Link
+                              to={costHrefForTask(t.request_id)}
+                              className="text-[var(--color-accent)] hover:underline"
+                              title="Cost tab with this request pinned"
+                            >
+                              Cost ▾
+                            </Link>
                             <Link
                               to={{
                                 pathname: `/trace/${encodeURIComponent(t.request_id ?? '')}`,

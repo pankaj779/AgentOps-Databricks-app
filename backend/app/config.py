@@ -78,6 +78,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AGENTOPS_REPLAY_TARGETS_JSON"),
     )
 
+    #: Optional path to a UTF-8 JSON file (same array schema). Use when .env JSON is hard to escape on Windows.
+    replay_targets_file: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENTOPS_REPLAY_TARGETS_FILE"),
+    )
+
     #: When true, POST /api/v1/benchmark/prompt can fan out a user prompt to replay targets (security-sensitive).
     benchmark_enabled: bool = Field(
         default=False,
