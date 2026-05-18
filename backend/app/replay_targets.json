@@ -1,0 +1,42 @@
+[
+  {
+    "id": "agentops_test",
+    "label": "agentops_test",
+    "url": "https://dbc-f0bdca80-26a1.cloud.databricks.com/ai-gateway/mlflow/v1/chat/completions",
+    "model": "agentops_test",
+    "headers": {},
+    "timeout_sec": 120
+  },
+  {
+    "id": "gemma-3-model",
+    "label": "gemma-3-model",
+    "url": "https://dbc-f0bdca80-26a1.cloud.databricks.com/ai-gateway/mlflow/v1/chat/completions",
+    "model": "gemma-3-model",
+    "headers": {},
+    "timeout_sec": 120
+  },
+  {
+    "id": "llama-4-model",
+    "label": "llama-4-model",
+    "url": "https://dbc-f0bdca80-26a1.cloud.databricks.com/ai-gateway/mlflow/v1/chat/completions",
+    "model": "llama-4-model",
+    "headers": {},
+    "timeout_sec": 120
+  },
+  {
+    "id": "meta-llama-model",
+    "label": "meta-llama-model",
+    "url": "https://dbc-f0bdca80-26a1.cloud.databricks.com/ai-gateway/mlflow/v1/chat/completions",
+    "model": "meta-llama-model",
+    "headers": {},
+    "timeout_sec": 120
+  },
+  {
+    "id": "qwen3-5_model",
+    "label": "qwen3-5_model",
+    "url": "https://dbc-f0bdca80-26a1.cloud.databricks.com/ai-gateway/mlflow/v1/chat/completions",
+    "model": "qwen3-5_model",
+    "headers": {},
+    "timeout_sec": 120
+  }
+]

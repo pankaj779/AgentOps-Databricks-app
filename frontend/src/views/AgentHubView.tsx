@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { Card } from '@/components/ui/Card'
+import { DataLoadingState } from '@/components/ui/DataLoadingState'
 import { Badge } from '@/components/ui/Badge'
 import { useWorkspaceSelection } from '@/context/WorkspaceSelectionContext'
 import type { AgentCatalogEntry, TraceRow, TracesListResponse } from '@/lib/api'
@@ -13,16 +14,30 @@ export function AgentHubView() {
   const location = useLocation()
   const navigate = useNavigate()
   const [sp, setSp] = useSearchParams()
-  const { agents, setAgents, toggleAgent } = useWorkspaceSelection()
+  const { agents, setAgents, toggleAgent, tasks, toggleTask, setTasks } = useWorkspaceSelection()
   const [catalog, setCatalog] = useState<AgentCatalogEntry[]>([])
+  const [catalogLoading, setCatalogLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [traces, setTraces] = useState<TracesListResponse | null>(null)
+  const [tracesLoading, setTracesLoading] = useState(false)
   const [tab, setTab] = useState<TabId>('directory')
 
   useEffect(() => {
+    let cancelled = false
+    setCatalogLoading(true)
     void fetchAgentsCatalog()
-      .then((c) => setCatalog(c.agents ?? []))
-      .catch(() => setCatalog([]))
+      .then((c) => {
+        if (!cancelled) setCatalog(c.agents ?? [])
+      })
+      .catch(() => {
+        if (!cancelled) setCatalog([])
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -46,6 +61,7 @@ export function AgentHubView() {
 
   useEffect(() => {
     let cancelled = false
+    setTracesLoading(true)
     ;(async () => {
       try {
         const tr = await fetchTraces(80, { agents: agents.length ? agents : null })
@@ -53,6 +69,8 @@ export function AgentHubView() {
       } catch {
         if (!cancelled)
           setTraces({ traces: [], error: 'Failed to load traces' })
+      } finally {
+        if (!cancelled) setTracesLoading(false)
       }
     })()
     return () => {
@@ -82,7 +100,17 @@ export function AgentHubView() {
   const costHrefForTask = (rid: string | null) => {
     if (!rid) return { pathname: NAV_PATHS.cost, search: location.search || '' }
     const n = new URLSearchParams(location.search)
-    n.set('task', rid)
+    n.delete('task')
+    n.delete('tasks')
+    n.append('tasks', rid)
+    return { pathname: NAV_PATHS.cost, search: n.toString() }
+  }
+
+  const costHrefForPinnedTasks = () => {
+    const n = new URLSearchParams(location.search)
+    n.delete('task')
+    n.delete('tasks')
+    for (const t of tasks) n.append('tasks', t)
     return { pathname: NAV_PATHS.cost, search: n.toString() }
   }
 
@@ -116,16 +144,11 @@ export function AgentHubView() {
             <span className="ml-1 text-[11px] opacity-80">({agents.length} scoped)</span>
           ) : null}
         </button>
-        <span className="text-[11px] text-[var(--color-muted)]">
-          Select models or tables below (multi-select for combined cost). Then open requests and a trace for tokens.
-        </span>
       </div>
 
       {tab === 'directory' ? (
-        <Card
-          title="Agents & models"
-          subtitle="Check multiple gateway models or inference tables to combine scope on Cost. Single-click row sets only that agent."
-        >
+        <DataLoadingState loading={catalogLoading} label="Loading agent catalog…">
+        <Card title="Agents & models">
           <input
             type="search"
             value={search}
@@ -134,20 +157,25 @@ export function AgentHubView() {
             className="mb-4 w-full max-w-md rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
           />
           {agents.length > 0 ? (
-            <p className="mb-3 text-xs text-[var(--color-teal)]">
-              Scoped:{' '}
-              {agents.map((a) => (
-                <span key={a} className="mr-2 font-mono text-[11px]">
-                  {a}
-                </span>
-              ))}
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-[var(--color-teal)]/35 bg-[var(--color-teal)]/10 px-3 py-2 text-xs">
+              <span className="text-[var(--color-teal)]">
+                Workspace scope ({agents.length}):{' '}
+                <span className="font-mono text-[var(--color-fg)]">{agents.join(', ')}</span>
+              </span>
               <Link
                 to={{ pathname: NAV_PATHS.cost, search: qs }}
-                className="ml-2 underline"
+                className="rounded-md bg-[var(--color-accent)] px-2 py-0.5 font-semibold text-white hover:opacity-90"
               >
-                View combined cost
+                Cost
               </Link>
-            </p>
+              <button
+                type="button"
+                onClick={() => setAgents([])}
+                className="rounded-md border border-[var(--color-border)] px-2 py-0.5 text-[var(--color-fg)] hover:bg-[var(--color-surface-elevated)]"
+              >
+                Clear scope
+              </button>
+            </div>
           ) : null}
           <ul className="max-h-[min(60vh,560px)] space-y-2 overflow-y-auto">
             {filtered.length === 0 ? (
@@ -187,13 +215,6 @@ export function AgentHubView() {
                       >
                         Requests →
                       </button>
-                      <button
-                        type="button"
-                        className="rounded-md border border-[var(--color-border)] px-2 py-1 text-[11px] text-[var(--color-fg)] hover:bg-[var(--color-surface-elevated)]"
-                        onClick={() => setAgents([e.key])}
-                      >
-                        Scope only
-                      </button>
                     </div>
                   </li>
                 )
@@ -201,11 +222,33 @@ export function AgentHubView() {
             )}
           </ul>
         </Card>
+        </DataLoadingState>
       ) : (
+        <DataLoadingState loading={tracesLoading && agents.length > 0} label="Loading requests…">
         <Card
           title="Request list"
-          subtitle="Scoped agents above (OR). Tokens come from the log row when columns exist; open Cost ▾ to pin a task for gateway-scoped totals."
+          subtitle="Scoped agents above (OR). Check requests to combine cost; Cost ▾ pins one request. Tokens come from log columns when present."
         >
+          {tasks.length > 0 ? (
+            <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-[var(--color-teal)]/30 bg-[var(--color-teal)]/5 px-3 py-2 text-xs">
+              <span className="text-[var(--color-teal)]">
+                {tasks.length} request{tasks.length === 1 ? '' : 's'} pinned for combined cost
+              </span>
+              <Link
+                to={costHrefForPinnedTasks()}
+                className="rounded-md bg-[var(--color-accent)] px-2 py-1 font-semibold text-white hover:opacity-90"
+              >
+                View combined cost ({tasks.length})
+              </Link>
+              <button
+                type="button"
+                onClick={() => setTasks([])}
+                className="rounded-md border border-[var(--color-border)] px-2 py-1 text-[var(--color-fg)] hover:bg-[var(--color-surface-elevated)]"
+              >
+                Clear pinned
+              </button>
+            </div>
+          ) : null}
           {!agents.length ? (
             <p className="text-sm text-[var(--color-warn-fg)]">
               Scope at least one agent from the Directory tab, or go to Overview and pick agents — then return here.
@@ -217,6 +260,7 @@ export function AgentHubView() {
               <table className="w-full min-w-[640px] text-left text-xs">
                 <thead className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
                   <tr>
+                    <th className="w-8 pb-2 pr-2" aria-label="Pin for cost" />
                     <th className="pb-2 pr-3">Time</th>
                     <th className="pb-2 pr-3">Request</th>
                     <th className="pb-2 pr-3">Tokens (log)</th>
@@ -228,13 +272,27 @@ export function AgentHubView() {
                 <tbody className="divide-y divide-[var(--color-border)]">
                   {(traces?.traces ?? []).length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="py-8 text-center text-[var(--color-muted)]">
+                      <td colSpan={7} className="py-8 text-center text-[var(--color-muted)]">
                         No traces for this combined scope in the last window.
                       </td>
                     </tr>
                   ) : (
-                    (traces?.traces ?? []).map((t) => (
+                    (traces?.traces ?? []).map((t) => {
+                      const rid = t.request_id ?? ''
+                      const pinned = rid ? tasks.includes(rid) : false
+                      return (
                       <tr key={t.request_id ?? t.event_time} className="hover:bg-[var(--color-surface-elevated)]/50">
+                        <td className="py-2 pr-2">
+                          {rid ? (
+                            <input
+                              type="checkbox"
+                              checked={pinned}
+                              onChange={() => toggleTask(rid)}
+                              className="rounded border-[var(--color-border)]"
+                              aria-label={`Pin ${rid} for combined cost`}
+                            />
+                          ) : null}
+                        </td>
                         <td className="py-2 pr-3 whitespace-nowrap text-[var(--color-muted)]">
                           {t.event_time.slice(5, 16).replace('T', ' ')}
                         </td>
@@ -286,16 +344,30 @@ export function AgentHubView() {
                             >
                               Drawer (Quality)
                             </button>
+                            {t.comparison_group_id ? (
+                              <Link
+                                to={{
+                                  pathname: `/trace/${encodeURIComponent(rid)}`,
+                                  search: qs,
+                                }}
+                                className="text-[11px] text-[var(--color-muted)] hover:underline"
+                                title="Cross-model rows for this comparison group"
+                              >
+                                Compare
+                              </Link>
+                            ) : null}
                           </div>
                         </td>
                       </tr>
-                    ))
+                      )
+                    })
                   )}
                 </tbody>
               </table>
             </div>
           )}
         </Card>
+        </DataLoadingState>
       )}
     </div>
   )

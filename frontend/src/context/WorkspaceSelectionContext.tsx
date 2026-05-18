@@ -8,15 +8,33 @@ function parseAgents(sp: URLSearchParams): string[] {
   return one ? [one] : []
 }
 
+function parseTasks(sp: URLSearchParams): string[] {
+  const multi = sp.getAll('tasks').filter(Boolean)
+  const one = sp.get('task')
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const t of [...multi, ...(one ? [one] : [])]) {
+    const s = t.trim()
+    if (s && !seen.has(s)) {
+      seen.add(s)
+      out.push(s)
+    }
+  }
+  return out
+}
+
 export type WorkspaceSelection = {
-  /** All scoped agent keys (inf:… / gw:…) — combined for Cost/Traces when len>1 */
   agents: string[]
-  /** First scoped agent (convenience) */
   agent: string | null
+  /** All pinned request IDs (multi-select). */
+  tasks: string[]
+  /** First pinned task (convenience). */
   task: string | null
   setAgents: (keys: string[]) => void
   toggleAgent: (key: string) => void
   setAgent: (key: string | null) => void
+  setTasks: (requestIds: string[]) => void
+  toggleTask: (requestId: string) => void
   setTask: (requestId: string | null) => void
   clearAll: () => void
 }
@@ -29,7 +47,8 @@ export function WorkspaceSelectionProvider({ children }: { children: ReactNode }
 
   const agents = useMemo(() => parseAgents(new URLSearchParams(searchSignature)), [searchSignature])
   const agent = agents[0] ?? null
-  const task = useMemo(() => new URLSearchParams(searchSignature).get('task'), [searchSignature])
+  const tasks = useMemo(() => parseTasks(new URLSearchParams(searchSignature)), [searchSignature])
+  const task = tasks[0] ?? null
 
   const setAgents = useCallback(
     (keys: string[]) => {
@@ -41,6 +60,7 @@ export function WorkspaceSelectionProvider({ children }: { children: ReactNode }
           const clean = keys.map((k) => k.trim()).filter(Boolean)
           for (const k of clean) n.append('agents', k)
           n.delete('task')
+          n.delete('tasks')
           return n
         },
         { replace: true },
@@ -62,6 +82,7 @@ export function WorkspaceSelectionProvider({ children }: { children: ReactNode }
           n.delete('agents')
           for (const x of next) n.append('agents', x)
           n.delete('task')
+          n.delete('tasks')
           return n
         },
         { replace: true },
@@ -78,7 +99,45 @@ export function WorkspaceSelectionProvider({ children }: { children: ReactNode }
           n.delete('agent')
           n.delete('agents')
           n.delete('task')
+          n.delete('tasks')
           if (key) n.append('agents', key.trim())
+          return n
+        },
+        { replace: true },
+      )
+    },
+    [setSp],
+  )
+
+  const setTasks = useCallback(
+    (requestIds: string[]) => {
+      setSp(
+        (prev) => {
+          const n = new URLSearchParams(prev)
+          n.delete('task')
+          n.delete('tasks')
+          const clean = requestIds.map((r) => r.trim()).filter(Boolean)
+          for (const r of clean) n.append('tasks', r)
+          return n
+        },
+        { replace: true },
+      )
+    },
+    [setSp],
+  )
+
+  const toggleTask = useCallback(
+    (requestId: string) => {
+      const r = requestId.trim()
+      if (!r) return
+      setSp(
+        (prev) => {
+          const n = new URLSearchParams(prev)
+          n.delete('task')
+          const cur = parseTasks(n)
+          const next = cur.includes(r) ? cur.filter((x) => x !== r) : [...cur, r]
+          n.delete('tasks')
+          for (const x of next) n.append('tasks', x)
           return n
         },
         { replace: true },
@@ -92,8 +151,9 @@ export function WorkspaceSelectionProvider({ children }: { children: ReactNode }
       setSp(
         (prev) => {
           const n = new URLSearchParams(prev)
-          if (requestId) n.set('task', requestId)
-          else n.delete('task')
+          n.delete('task')
+          n.delete('tasks')
+          if (requestId) n.set('task', requestId.trim())
           return n
         },
         { replace: true },
@@ -107,8 +167,20 @@ export function WorkspaceSelectionProvider({ children }: { children: ReactNode }
   }, [setSp])
 
   const value = useMemo(
-    () => ({ agents, agent, task, setAgents, toggleAgent, setAgent, setTask, clearAll }),
-    [agents, agent, task, setAgents, toggleAgent, setAgent, setTask, clearAll],
+    () => ({
+      agents,
+      agent,
+      tasks,
+      task,
+      setAgents,
+      toggleAgent,
+      setAgent,
+      setTasks,
+      toggleTask,
+      setTask,
+      clearAll,
+    }),
+    [agents, agent, tasks, task, setAgents, toggleAgent, setAgent, setTasks, toggleTask, setTask, clearAll],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

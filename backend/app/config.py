@@ -7,12 +7,13 @@ from pathlib import Path
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_BACKEND_DIR = Path(__file__).resolve().parent.parent
+# backend/ (parent of app/) — .env and replay_targets.json live here
+BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(_BACKEND_DIR / ".env"),
+        env_file=str(BACKEND_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -30,6 +31,15 @@ class Settings(BaseSettings):
     databricks_token: str = Field(
         default="",
         validation_alias=AliasChoices("DATABRICKS_TOKEN", "DATABRICKS_PAT"),
+        description="PAT for SQL warehouse (Overview, Cost, Governance, traces, system tables).",
+    )
+    #: Optional separate PAT for HTTP replay/benchmark only; falls back to DATABRICKS_TOKEN if empty.
+    databricks_ai_gateway_token: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "DATABRICKS_AI_GATEWAY_TOKEN",
+            "AGENTOPS_AI_GATEWAY_TOKEN",
+        ),
     )
     workspace_id: str = Field(
         default="",
@@ -100,6 +110,18 @@ class Settings(BaseSettings):
     use_demo_metrics: bool = Field(
         default=False,
         validation_alias=AliasChoices("AGENTOPS_USE_DEMO_METRICS"),
+    )
+
+    #: Hide AgentOps replay/benchmark rows from trace lists unless user=agentops_dash_test_show
+    exclude_test_requests_from_analytics: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("AGENTOPS_EXCLUDE_TEST_REQUESTS"),
+    )
+
+    #: USD per 1M tokens for compare-table estimates (set AGENTOPS_COMPARE_USD_PER_1M_TOKENS=0.7 in .env)
+    compare_fallback_usd_per_1m_tokens: float = Field(
+        default=0.7,
+        validation_alias=AliasChoices("AGENTOPS_COMPARE_USD_PER_1M_TOKENS"),
     )
 
 

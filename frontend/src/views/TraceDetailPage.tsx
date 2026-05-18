@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
+import { ModelCompareResults } from '@/components/ModelCompareResults'
 import { RequestLineageGraph } from '@/components/RequestLineageGraph'
 import { Card } from '@/components/ui/Card'
+import { LoadingSpinner } from '@/components/ui/LoadingSpinner'
 import type {
   BenchmarkPromptResponse,
   ComparisonGroupResponse,
@@ -18,6 +20,7 @@ import {
   postReplayRun,
 } from '@/lib/api'
 import { NAV_PATHS } from '@/lib/navigation'
+import { useWorkspaceSelection } from '@/context/WorkspaceSelectionContext'
 
 function extractMessagesFromRequest(req: unknown): { role: string; content: string }[] {
   if (!req || typeof req !== 'object') return [{ role: 'user', content: '' }]
@@ -43,6 +46,8 @@ export function TraceDetailPage() {
   const location = useLocation()
   const qs = location.search || ''
   const requestId = ridParam ? decodeURIComponent(ridParam) : ''
+  const { tasks, toggleTask } = useWorkspaceSelection()
+  const pinnedForCost = requestId ? tasks.includes(requestId) : false
 
   const [detail, setDetail] = useState<TraceDetailResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -54,6 +59,8 @@ export function TraceDetailPage() {
   const [benchBusy, setBenchBusy] = useState(false)
   const [benchResult, setBenchResult] = useState<BenchmarkPromptResponse | null>(null)
   const [benchMessage, setBenchMessage] = useState('')
+  const [trackReplayInDashboard, setTrackReplayInDashboard] = useState(false)
+  const [trackBenchmarkInDashboard, setTrackBenchmarkInDashboard] = useState(false)
 
   useEffect(() => {
     if (!requestId) return
@@ -114,14 +121,20 @@ export function TraceDetailPage() {
       .catch(() => setReplayTargets({ targets: [] }))
   }, [])
 
-  const sortedBench = useMemo(() => {
-    const rows = benchResult?.results ?? []
-    return [...rows].sort((a, b) => {
-      const ta = Number(a.usage?.total_tokens ?? 1e9)
-      const tb = Number(b.usage?.total_tokens ?? 1e9)
-      return ta - tb
-    })
-  }, [benchResult])
+  const trackLabel = (checked: boolean, onChange: (v: boolean) => void) => (
+    <label className="mb-3 flex cursor-pointer items-start gap-2 text-[11px] text-[var(--color-muted)]">
+      <input
+        type="checkbox"
+        className="mt-0.5"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span>
+        <span className="font-medium text-[var(--color-fg)]">Track in dashboard</span> — include these test calls in
+        Agents &amp; request lists (when off, AgentOps hides them; Databricks may still log and bill).
+      </span>
+    </label>
+  )
 
   return (
     <div className="min-h-svh bg-[var(--color-bg)] text-[var(--color-fg)]">
@@ -138,16 +151,48 @@ export function TraceDetailPage() {
           <span className="font-mono text-xs text-[var(--color-muted)] truncate max-w-[280px]">
             {requestId || '—'}
           </span>
+          {requestId ? (
+            <>
+              <button
+                type="button"
+                onClick={() => toggleTask(requestId)}
+                className={`rounded-md border px-2 py-1 text-xs ${
+                  pinnedForCost
+                    ? 'border-[var(--color-teal)] bg-[var(--color-teal)]/10 text-[var(--color-teal)]'
+                    : 'border-[var(--color-border)] text-[var(--color-fg)] hover:bg-[var(--color-surface-elevated)]'
+                }`}
+              >
+                {pinnedForCost ? 'Pinned for cost' : 'Add to cost selection'}
+              </button>
+              <Link
+                to={{
+                  pathname: NAV_PATHS.cost,
+                  search: (() => {
+                    const n = new URLSearchParams(qs)
+                    n.delete('task')
+                    n.delete('tasks')
+                    for (const t of tasks.includes(requestId) ? tasks : [...tasks, requestId]) {
+                      n.append('tasks', t)
+                    }
+                    return n.toString()
+                  })(),
+                }}
+                className="text-xs text-[var(--color-accent)] hover:underline"
+              >
+                Open cost
+              </Link>
+            </>
+          ) : null}
         </div>
       </header>
       <main className="mx-auto max-w-5xl space-y-6 p-4 pb-16">
-        {loading ? <p className="text-sm text-[var(--color-muted)]">Loading trace…</p> : null}
+        {loading ? <LoadingSpinner label="Loading trace…" /> : null}
         {detail?.error ? <p className="text-[var(--color-danger)]">{detail.error}</p> : null}
 
         {!loading && detail?.comparison_group_id ? (
           <Card title="Cross-model comparison (this task group)" subtitle="Production rows sharing comparison_group_id">
             <div className="font-mono text-[11px] text-[var(--color-muted)]">{detail.comparison_group_id}</div>
-            {compLoading ? <p className="mt-2 text-xs text-[var(--color-muted)]">Loading…</p> : null}
+            {compLoading ? <LoadingSpinner label="Loading comparison…" size="sm" /> : null}
             {comp?.error ? <p className="text-sm text-[var(--color-warn-fg)]">{comp.error}</p> : null}
             {!compLoading && comp?.rows && comp.rows.length > 0 ? (
               <div className="mt-3 max-h-64 overflow-auto rounded-lg border border-[var(--color-border)]">
@@ -198,9 +243,10 @@ export function TraceDetailPage() {
 
         {!loading && (replayTargets?.targets?.length ?? 0) > 0 && detail?.request_id ? (
           <Card
-            title="Replay logged JSON"
-            subtitle="Same payload to each target in AGENTOPS_REPLAY_TARGETS_JSON"
+            title="Replay this request"
+            subtitle="Re-sends the exact JSON body stored for this trace to every model in replay_targets.json (same prompt, tools, and params as the original call)."
           >
+            {trackLabel(trackReplayInDashboard, setTrackReplayInDashboard)}
             <button
               type="button"
               disabled={replayBusy}
@@ -209,7 +255,7 @@ export function TraceDetailPage() {
                 if (!detail.request_id) return
                 setReplayBusy(true)
                 setReplayResult(null)
-                void postReplayRun(detail.request_id)
+                void postReplayRun(detail.request_id, { trackInDashboard: trackReplayInDashboard })
                   .then(setReplayResult)
                   .catch((e) =>
                     setReplayResult({
@@ -225,71 +271,46 @@ export function TraceDetailPage() {
             {replayResult?.error ? (
               <p className="mt-2 text-sm text-[var(--color-warn-fg)]">{replayResult.error}</p>
             ) : null}
-            {(replayResult?.results?.length ?? 0) > 0 ? (
-              <ul className="mt-3 space-y-2 text-xs">
-                {replayResult!.results!.map((rr) => (
-                  <li key={rr.target_id} className="rounded-lg border border-[var(--color-border)] px-2 py-2">
-                    <strong>{rr.label}</strong> — HTTP {rr.status_code ?? '—'} — {Math.round(rr.latency_ms)} ms
-                    {rr.usage?.total_tokens != null ? (
-                      <span className="ml-2 font-mono">tokens {String(rr.usage.total_tokens)}</span>
-                    ) : null}
-                    {rr.error ? <div className="text-[var(--color-danger)]">{rr.error}</div> : null}
-                  </li>
-                ))}
-              </ul>
-            ) : null}
+            <ModelCompareResults
+              results={replayResult?.results ?? []}
+              question={replayResult?.question}
+              objectiveSummary={replayResult?.objective_summary}
+              costEstimate={replayResult?.cost_estimate}
+            />
           </Card>
         ) : null}
 
         <Card
-          title="Live prompt benchmark"
-          subtitle="Same question to every replay target — enable AGENTOPS_BENCHMARK_ENABLED=true on the server"
+          title="Custom prompt benchmark"
+          subtitle="Type any new question below and send it to all replay targets (not the stored trace body — use “Replay this request” above for that)."
         >
-          {replayTargets?.diagnostics ? (
+          {(replayTargets?.targets?.length ?? 0) === 0 ? (
             <div className="mb-3 rounded-lg border border-[var(--color-warn-border)] bg-[var(--color-warn-bg)] px-3 py-2 text-[11px] text-[var(--color-warn-fg)]">
-              <strong className="block text-[var(--color-fg)]">Replay targets not loaded</strong>
-              <span className="mt-1 block">{replayTargets.diagnostics.hint}</span>
-              {replayTargets.diagnostics.parse_error ? (
-                <pre className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap font-mono text-[10px] opacity-90">
-                  {replayTargets.diagnostics.parse_error}
-                </pre>
-              ) : null}
-              <p className="mt-2 text-[10px] text-[var(--color-muted)]">
-                Source: {replayTargets.diagnostics.configured_from ?? '—'} (raw {replayTargets.diagnostics.raw_length ?? 0}{' '}
-                chars).
-                {replayTargets.diagnostics.load_notes?.length ? (
-                  <>
-                    {' '}
-                    Load notes: {replayTargets.diagnostics.load_notes.join(' · ')}
-                  </>
-                ) : null}{' '}
-                Tip: set <code className="text-[var(--color-fg)]">AGENTOPS_REPLAY_TARGETS_FILE</code> to a json file under{' '}
-                <code className="text-[var(--color-fg)]">backend/</code> (see{' '}
-                <code className="text-[var(--color-fg)]">replay_targets.example.json</code>).
-              </p>
+              Replay targets not loaded. Add <code className="text-[10px]">backend/replay_targets.json</code> and restart
+              the API.
             </div>
           ) : null}
-          <p className="mb-2 text-xs text-[var(--color-muted)]">
-            Uses OpenAI-style chat JSON. Best for localhost demos with real gateway URLs in replay targets.
+          <p className="mb-2 text-[10px] text-[var(--color-muted)]">
+            {(replayTargets?.targets?.length ?? 0)} target(s) configured.
           </p>
-          <details className="mb-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-elevated)]/40 px-3 py-2 text-[11px] text-[var(--color-muted)]">
+          <details className="mb-3 hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-elevated)]/40 px-3 py-2 text-[11px] text-[var(--color-muted)]">
             <summary className="cursor-pointer font-medium text-[var(--color-teal)]">
-              Enable benchmark (backend .env)
+              Env reference
             </summary>
             <ol className="mt-2 list-inside list-decimal space-y-1.5">
               <li>
-                Add replay targets (OpenAI-compatible URLs):{' '}
-                <code className="text-[10px] text-[var(--color-fg)]">AGENTOPS_REPLAY_TARGETS_JSON</code>
+                <code className="text-[10px] text-[var(--color-fg)]">AGENTOPS_REPLAY_TARGETS_FILE=replay_targets.json</code>
               </li>
               <li>
-                Turn on the API: <code className="text-[10px] text-[var(--color-fg)]">AGENTOPS_BENCHMARK_ENABLED=true</code>
+                <code className="text-[10px] text-[var(--color-fg)]">AGENTOPS_BENCHMARK_ENABLED=true</code>
               </li>
-              <li>Restart the FastAPI process and reload this page.</li>
+              <li>Restart FastAPI after edits.</li>
             </ol>
             <p className="mt-2 text-[10px]">
               Targets receive the same JSON body as replay (model + messages + max_tokens). Use only trusted URLs.
             </p>
           </details>
+          {trackLabel(trackBenchmarkInDashboard, setTrackBenchmarkInDashboard)}
           <textarea
             value={benchMessage}
             onChange={(e) => setBenchMessage(e.target.value)}
@@ -308,6 +329,7 @@ export function TraceDetailPage() {
                 messages: [{ role: 'user', content: benchMessage.trim() }],
                 max_tokens: 256,
                 temperature: 0,
+                track_in_dashboard: trackBenchmarkInDashboard,
               })
                 .then(setBenchResult)
                 .catch((e) =>
@@ -327,36 +349,12 @@ export function TraceDetailPage() {
               {benchResult.hint ? ` — ${benchResult.hint}` : ''}
             </p>
           ) : null}
-          {sortedBench.length > 0 ? (
-            <div className="mt-4 overflow-x-auto rounded-lg border border-[var(--color-border)]">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-[var(--color-surface-elevated)] text-[10px] font-semibold uppercase text-[var(--color-muted)]">
-                  <tr>
-                    <th className="px-2 py-2">Target</th>
-                    <th className="px-2 py-2">HTTP</th>
-                    <th className="px-2 py-2">ms</th>
-                    <th className="px-2 py-2">Total tokens</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--color-border)]">
-                  {sortedBench.map((r) => (
-                    <tr key={r.target_id}>
-                      <td className="px-2 py-2 font-medium">{r.label}</td>
-                      <td className="px-2 py-2">{r.status_code ?? '—'}</td>
-                      <td className="px-2 py-2 tabular-nums">{Math.round(r.latency_ms)}</td>
-                      <td className="px-2 py-2 font-mono tabular-nums">
-                        {r.usage?.total_tokens != null ? String(r.usage.total_tokens) : '—'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <p className="border-t border-[var(--color-border)] p-2 text-[10px] text-[var(--color-muted)]">
-                Sorted by total tokens (lowest first). Verify output quality separately — token count alone is not
-                sufficiency.
-              </p>
-            </div>
-          ) : null}
+          <ModelCompareResults
+            results={benchResult?.results ?? []}
+            question={benchResult?.question ?? benchMessage}
+            objectiveSummary={benchResult?.objective_summary}
+            costEstimate={benchResult?.cost_estimate}
+          />
         </Card>
 
         {!loading && detail?.lineage_graph?.nodes?.length ? (
@@ -391,14 +389,18 @@ export function TraceDetailPage() {
           </Card>
         ) : null}
 
-        {detail?.response_json != null ? (
+        {detail?.response_json != null || detail?.response_raw ? (
           <Card>
-            <details>
+            <details open>
               <summary className="cursor-pointer text-sm font-semibold text-[var(--color-teal)]">
-                Response JSON
+                Response
               </summary>
               <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-black/20 p-2 text-[10px]">
-                {JSON.stringify(detail.response_json, null, 2)}
+                {detail.response_raw
+                  ? detail.response_raw
+                  : typeof detail.response_json === 'string'
+                    ? detail.response_json
+                    : JSON.stringify(detail.response_json, null, 2)}
               </pre>
             </details>
           </Card>

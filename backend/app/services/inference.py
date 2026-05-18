@@ -66,23 +66,7 @@ _SCHEMA_DISCOVER_TTL = 120.0
 
 
 def _discover_tables_uncached(catalog: str, schema: str) -> tuple[list[str], str | None]:
-    """List base table names in a UC schema (information_schema first, then SHOW TABLES)."""
-    c_esc = catalog.replace("'", "''")
-    s_esc = schema.replace("'", "''")
-    sql_info = (
-        "SELECT table_name FROM system.information_schema.tables "
-        f"WHERE lower(table_catalog) = lower('{c_esc}') AND lower(table_schema) = lower('{s_esc}') "
-        "AND table_type = 'BASE TABLE' ORDER BY table_name"
-    )
-    try:
-        with sql_connection() as conn:
-            cur = conn.cursor()
-            cur.execute(sql_info)
-            rows = cur.fetchall() or []
-        if rows:
-            return [str(r[0]) for r in rows if r and r[0] is not None], None
-    except Exception:  # noqa: BLE001
-        pass
+    """List table names in a UC schema (SHOW TABLES first — AI Gateway logs are often MANAGED, not BASE TABLE)."""
     try:
         qs = quote_schema_fqn(f"{catalog}.{schema}")
         sql_show = f"SHOW TABLES IN {qs}"
@@ -103,9 +87,65 @@ def _discover_tables_uncached(catalog: str, schema: str) -> tuple[list[str], str
                 tname = str(r[0]).strip()
             if tname and tname.lower() != "tablename":
                 names.append(tname)
-        return names, None
+        if names:
+            return names, None
+    except Exception:  # noqa: BLE001
+        pass
+    c_esc = catalog.replace("'", "''")
+    s_esc = schema.replace("'", "''")
+    sql_info = (
+        "SELECT table_name FROM system.information_schema.tables "
+        f"WHERE lower(table_catalog) = lower('{c_esc}') AND lower(table_schema) = lower('{s_esc}') "
+        "AND table_type IN ('MANAGED', 'EXTERNAL', 'BASE TABLE') ORDER BY table_name"
+    )
+    try:
+        with sql_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(sql_info)
+            rows = cur.fetchall() or []
+        if rows:
+            return [str(r[0]) for r in rows if r and r[0] is not None], None
     except Exception as e:  # noqa: BLE001
         return [], str(e).strip()[:400]
+    return [], None
+
+
+def _filter_reachable_fqns(fqns: list[str]) -> tuple[list[str], list[str]]:
+    """Drop tables the warehouse cannot read (avoids breaking UNION for one bad name)."""
+    ok: list[str] = []
+    skipped: list[str] = []
+    for f in fqns:
+        try:
+            q = quote_fqn(f)
+            with sql_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(f"SELECT 1 FROM {q} LIMIT 1")
+            ok.append(f)
+        except Exception:  # noqa: BLE001
+            skipped.append(f)
+    return ok, skipped
+
+
+def discovered_payload_table_count() -> int:
+    """Tables matching schema + suffix from SHOW TABLES (includes idle routes)."""
+    s = get_settings()
+    csv = (s.inference_tables_fqn or "").strip()
+    if csv:
+        n = 0
+        for chunk in csv.replace("\n", ",").replace(";", ",").split(","):
+            if chunk.strip() and validate_fqn(chunk.strip()):
+                n += 1
+        return n
+    schema_raw = (s.inference_schema_fqn or "").strip()
+    if not schema_raw or not validate_schema_fqn(schema_raw):
+        raw = (s.inference_table_fqn or "").strip()
+        return 1 if raw and validate_fqn(raw) else 0
+    cat, sch = schema_raw.split(".", 1)
+    suffix = (s.inference_table_name_suffix or "").strip()
+    raw_names, _ = _discover_tables_uncached(cat, sch)
+    if suffix:
+        return sum(1 for t in raw_names if t.endswith(suffix))
+    return len(raw_names)
 
 
 def discover_inference_table_fqns() -> tuple[list[str], str | None]:
@@ -136,7 +176,11 @@ def discover_inference_table_fqns() -> tuple[list[str], str | None]:
         if validate_fqn(fqn):
             fqns.append(fqn)
     fqns.sort()
+    fqns, skipped = _filter_reachable_fqns(fqns)
     warn = None if fqns else "No tables found matching suffix; check AGENTOPS_INFERENCE_TABLE_SUFFIX or schema name."
+    if skipped:
+        note = f"Skipped {len(skipped)} unreachable table(s): {', '.join(skipped[:3])}"
+        warn = f"{warn} {note}".strip() if warn else note
     _SCHEMA_DISCOVER_CACHE[cache_key] = (now, fqns, warn)
     return fqns, warn
 
@@ -171,6 +215,7 @@ def inference_fqn_list() -> tuple[list[str], str | None]:
             t = chunk.strip()
             if t and validate_fqn(t):
                 out.append(t)
+        out, _skipped = _filter_reachable_fqns(out)
         return out, ("explicit_tables" if out else "no valid entries in AGENTOPS_INFERENCE_TABLES")
 
     schema_note = (s.inference_schema_fqn or "").strip()
@@ -240,11 +285,18 @@ def resolve_time_column(columns: list[str], explicit: str) -> str | None:
     return _pick_column(avail, TIME_COLUMN_CANDIDATES)
 
 
-def count_since_hours(table_sql: str, time_col: str, hours: int = 24) -> tuple[int | None, str | None]:
+def count_since_hours(
+    table_sql: str,
+    time_col: str,
+    hours: int = 24,
+    *,
+    request_exclude_sql: str = "",
+) -> tuple[int | None, str | None]:
     try:
         sql = (
             f"SELECT COUNT(*) AS c FROM {table_sql} "
             f"WHERE `{time_col}` >= current_timestamp() - INTERVAL {hours} HOURS"
+            f"{request_exclude_sql}"
         )
         with sql_connection() as conn:
             cur = conn.cursor()
@@ -265,6 +317,7 @@ def inference_metrics() -> dict[str, Any]:
         "table_configured": bool(fqns),
         "table_fqn": fqns[0] if len(fqns) == 1 else None,
         "table_fqns": fqns if len(fqns) > 1 else None,
+        "tables_discovered_count": discovered_payload_table_count(),
         "fqns_resolution_note": fqns_note,
         "time_column": None,
         "count_24h": None,
@@ -312,7 +365,10 @@ def inference_metrics() -> dict[str, Any]:
         )
         return out
 
-    c24, err = count_since_hours(table_sql, time_col, 24)
+    from app.services.compare_run import test_request_sql_exclude_fragment
+
+    test_excl = test_request_sql_exclude_fragment(cols)
+    c24, err = count_since_hours(table_sql, time_col, 24, request_exclude_sql=test_excl)
     out["count_24h"] = c24
     if err:
         out["count_error"] = err
@@ -320,17 +376,23 @@ def inference_metrics() -> dict[str, Any]:
 
     stat_col = _pick_column(set(cols), STATUS_CANDIDATES)
     if stat_col:
-        er = inference_error_rate_24h(time_col, table_sql, stat_col)
+        er = inference_error_rate_24h(time_col, table_sql, stat_col, request_exclude_sql=test_excl)
         if er is not None:
             out["error_rate_pct_24h"] = er
 
-    c7, _ = count_since_hours(table_sql, time_col, 24 * 7)
+    c7, _ = count_since_hours(table_sql, time_col, 24 * 7, request_exclude_sql=test_excl)
     out["count_7d"] = c7
 
     return out
 
 
-def inference_error_rate_24h(time_col: str, table_sql: str, status_col: str | None) -> float | None:
+def inference_error_rate_24h(
+    time_col: str,
+    table_sql: str,
+    status_col: str | None,
+    *,
+    request_exclude_sql: str = "",
+) -> float | None:
     if not status_col:
         return None
     try:
@@ -339,6 +401,7 @@ def inference_error_rate_24h(time_col: str, table_sql: str, status_col: str | No
             f"SELECT AVG(CASE WHEN CAST(`{status_col}` AS DOUBLE) >= 400 "
             f"OR CAST(`{status_col}` AS DOUBLE) < 100 THEN 1.0 ELSE 0.0 END) AS err_rate "
             f"FROM {table_sql} WHERE `{time_col}` >= current_timestamp() - INTERVAL 24 HOURS"
+            f"{request_exclude_sql}"
         )
         with sql_connection() as conn:
             cur = conn.cursor()
@@ -435,6 +498,9 @@ def inference_agent_rollups(limit: int = 15) -> list[dict[str, Any]]:
 
     lat_col = _pick_column(avail, LATENCY_CANDIDATES)
     stat_col = _pick_column(avail, STATUS_CANDIDATES)
+    from app.services.compare_run import test_request_sql_exclude_fragment
+
+    tx = test_request_sql_exclude_fragment(list(cols))
 
     # RPM from 24h window: count / (24 * 60)
     try:
@@ -444,20 +510,20 @@ def inference_agent_rollups(limit: int = 15) -> list[dict[str, Any]]:
                 f"approx_percentile(`{lat_col}`, 0.95) AS p95, "
                 f"AVG(CASE WHEN CAST(`{stat_col}` AS DOUBLE) >= 400 "
                 f"OR CAST(`{stat_col}` AS DOUBLE) < 100 THEN 1.0 ELSE 0.0 END) AS err_frac "
-                f"FROM {table_sql} WHERE `{time_col}` >= current_timestamp() - INTERVAL 24 HOURS "
+                f"FROM {table_sql} WHERE `{time_col}` >= current_timestamp() - INTERVAL 24 HOURS{tx} "
                 f"GROUP BY `{group_col}` ORDER BY cnt DESC LIMIT {int(limit)}"
             )
         elif lat_col:
             sql = (
                 f"SELECT `{group_col}` AS k, COUNT(*) AS cnt, "
                 f"approx_percentile(`{lat_col}`, 0.95) AS p95 "
-                f"FROM {table_sql} WHERE `{time_col}` >= current_timestamp() - INTERVAL 24 HOURS "
+                f"FROM {table_sql} WHERE `{time_col}` >= current_timestamp() - INTERVAL 24 HOURS{tx} "
                 f"GROUP BY `{group_col}` ORDER BY cnt DESC LIMIT {int(limit)}"
             )
         else:
             sql = (
                 f"SELECT `{group_col}` AS k, COUNT(*) AS cnt "
-                f"FROM {table_sql} WHERE `{time_col}` >= current_timestamp() - INTERVAL 24 HOURS "
+                f"FROM {table_sql} WHERE `{time_col}` >= current_timestamp() - INTERVAL 24 HOURS{tx} "
                 f"GROUP BY `{group_col}` ORDER BY cnt DESC LIMIT {int(limit)}"
             )
         with sql_connection() as conn:

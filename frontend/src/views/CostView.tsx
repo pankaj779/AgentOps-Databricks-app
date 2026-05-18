@@ -11,9 +11,11 @@ import {
   YAxis,
 } from 'recharts'
 import { Card } from '@/components/ui/Card'
+import { DataLoadingState } from '@/components/ui/DataLoadingState'
 import { useWorkspaceSelection } from '@/context/WorkspaceSelectionContext'
 import type { CostSummaryResponse } from '@/lib/api'
 import { fetchCostSummary } from '@/lib/api'
+import { TIME_RANGE_OPTIONS, type TimeRangeHours } from '@/lib/timeRange'
 
 const axisProps = {
   stroke: 'var(--color-muted)',
@@ -30,17 +32,20 @@ function shortBucket(iso: string) {
 }
 
 export function CostView() {
-  const { agents, clearAll, task } = useWorkspaceSelection()
+  const { agents, clearAll, tasks } = useWorkspaceSelection()
   const [data, setData] = useState<CostSummaryResponse | null>(null)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [hours, setHours] = useState<TimeRangeHours>(168)
 
   useEffect(() => {
     let cancelled = false
+    setLoading(true)
     ;(async () => {
       try {
-        const c = await fetchCostSummary(168, {
+        const c = await fetchCostSummary(hours, {
           agents: agents.length ? agents : null,
-          task: task?.trim() || null,
+          tasks: tasks.length ? tasks : null,
         })
         if (!cancelled) {
           setData(c)
@@ -48,12 +53,14 @@ export function CostView() {
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load')
+      } finally {
+        if (!cancelled) setLoading(false)
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [agents, task])
+  }, [agents, tasks, hours])
 
   const hourlyChart = useMemo(
     () =>
@@ -100,7 +107,10 @@ export function CostView() {
       bill && !bill.error && bill.total_list_usd != null && bill.total_list_usd > 0
     const rollups = (data.by_destination ?? []).length > 0
     const hourly = (data.hourly ?? []).length > 0
-    return !gwHas && !billHas && !rollups && !hourly
+    const byReqHas = (data.by_request ?? []).some(
+      (r) => (r.gateway_total_tokens ?? 0) > 0 || (r.est_payload_tokens ?? 0) > 0,
+    )
+    return !gwHas && !billHas && !rollups && !hourly && !byReqHas
   }, [data, gw, bill])
 
   return (
@@ -108,11 +118,38 @@ export function CostView() {
       {error ? <p className="text-sm text-[var(--color-danger)]">{error}</p> : null}
       {data?.error ? <p className="text-sm text-[var(--color-warn-fg)]">{data.error}</p> : null}
 
+      <DataLoadingState loading={loading} label="Loading cost & tokens…">
       <Card title="Cost & tokens">
-        {task?.trim() ? (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <label className="text-xs text-[var(--color-muted)]" htmlFor="cost-hours">
+            Time range
+          </label>
+          <select
+            id="cost-hours"
+            value={hours}
+            onChange={(e) => setHours(Number(e.target.value) as TimeRangeHours)}
+            className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-xs"
+          >
+            {TIME_RANGE_OPTIONS.map((o) => (
+              <option key={o.hours} value={o.hours}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        {tasks.length ? (
           <p className="mb-3 text-xs text-[var(--color-teal)]">
-            Pinned request <span className="font-mono">{task.trim()}</span> — gateway totals, payload charts, and list
-            price (when we can match gateway/log labels to billing) follow this call.
+            {tasks.length === 1 ? (
+              <>
+                Pinned request <span className="font-mono">{tasks[0]}</span> — gateway tokens are for this call (see
+                summary cards + table below). List price may be $0 if billing has no match for this endpoint.
+              </>
+            ) : (
+              <>
+                <span className="font-semibold">{tasks.length} pinned requests</span> — gateway and payload totals are
+                combined (sum). See per-request table below.
+              </>
+            )}
           </p>
         ) : null}
         {agents.length ? (
@@ -356,6 +393,53 @@ export function CostView() {
         </Card>
       ) : null}
 
+      {(data?.by_request?.length ?? 0) > 0 ? (
+        <Card
+          title="Per-request breakdown"
+          subtitle="Gateway tokens (metered) and prorated list USD when billing scope matches."
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-left text-sm">
+              <thead className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
+                <tr>
+                  <th className="pb-3 pr-3">Request</th>
+                  <th className="pb-3 pr-3">Model</th>
+                  <th className="pb-3 pr-3">GW tokens</th>
+                  <th className="pb-3 pr-3">Payload est.</th>
+                  <th className="pb-3">Est. $</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--color-border)]">
+                {[...(data?.by_request ?? [])]
+                  .sort(
+                    (a, b) =>
+                      (Number(b.gateway_total_tokens) || 0) - (Number(a.gateway_total_tokens) || 0),
+                  )
+                  .map((r) => (
+                    <tr key={r.request_id}>
+                      <td className="max-w-[140px] truncate py-2 pr-3 font-mono text-[10px]" title={r.request_id}>
+                        {r.request_id}
+                      </td>
+                      <td className="max-w-[160px] truncate py-2 pr-3 text-xs text-[var(--color-muted)]">
+                        {r.destination_model ?? '—'}
+                      </td>
+                      <td className="py-2 pr-3 font-mono tabular-nums text-[var(--color-teal)]">
+                        {r.gateway_total_tokens != null ? r.gateway_total_tokens.toLocaleString() : '—'}
+                      </td>
+                      <td className="py-2 pr-3 tabular-nums text-[var(--color-muted)]">
+                        {r.est_payload_tokens != null ? Math.round(r.est_payload_tokens).toLocaleString() : '—'}
+                      </td>
+                      <td className="py-2 tabular-nums text-[var(--color-fg)]">
+                        {r.est_list_usd_prorated != null ? `$${r.est_list_usd_prorated.toFixed(4)}` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      ) : null}
+
       <Card title="Inference table (proxy)">
         <p className="mb-3 text-xs text-[var(--color-muted)]">
           {(total != null ? Math.round(total) : 0).toLocaleString()} est. tokens (char/4) in window.
@@ -391,6 +475,7 @@ export function CostView() {
           </table>
         </div>
       </Card>
+      </DataLoadingState>
     </div>
   )
 }

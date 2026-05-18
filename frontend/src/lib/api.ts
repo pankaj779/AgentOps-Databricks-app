@@ -31,6 +31,9 @@ export type OverviewResponse = {
   gateway_tokens_24h: number | null
   gateway_tokens_7d: number | null
   gateway_usage_error: string | null
+  window_hours?: number
+  count_window?: number | null
+  gateway_tokens_window?: number | null
 }
 
 export type AgentSummary = {
@@ -57,8 +60,8 @@ export async function fetchHealth(): Promise<HealthResponse> {
   return parseJson<HealthResponse>(res)
 }
 
-export async function fetchOverview(): Promise<OverviewResponse> {
-  const res = await fetch('/api/v1/overview')
+export async function fetchOverview(hours = 168): Promise<OverviewResponse> {
+  const res = await fetch(`/api/v1/overview?hours=${encodeURIComponent(String(hours))}`)
   return parseJson<OverviewResponse>(res)
 }
 
@@ -162,6 +165,17 @@ export type BillingCostSummary = {
   endpoint_match_terms?: string[] | null
 }
 
+export type CostByRequestRow = {
+  request_id: string
+  gateway_input_tokens?: number | null
+  gateway_output_tokens?: number | null
+  gateway_total_tokens?: number | null
+  est_payload_tokens?: number
+  inference_requests?: number
+  est_list_usd_prorated?: number | null
+  destination_model?: string | null
+}
+
 export type CostSummaryResponse = {
   hours: number
   method: string
@@ -169,10 +183,16 @@ export type CostSummaryResponse = {
   total_est_tokens: number | null
   by_destination: CostByDest[]
   hourly: CostHourly[]
+  by_request?: CostByRequestRow[]
   error: string | null
   ai_gateway?: AiGatewayCostSummary | null
   billing?: BillingCostSummary | null
   token_primary_source?: string | null
+  token_cost_estimate?: {
+    usd_per_1m_tokens?: number | null
+    estimated_usd?: number | null
+    note?: string | null
+  } | null
   filter?: {
     source_table: string | null
     gateway_model: string | null
@@ -249,35 +269,58 @@ export type ReplayTargetsResponse = {
   }
 }
 
-export type ReplayResultRow = {
+export type CompareResultRow = {
   target_id: string
   label: string
   status_code: number | null
   latency_ms: number
   usage: { input_tokens?: unknown; output_tokens?: unknown; total_tokens?: unknown } | null
+  answer?: string | null
+  response_preview?: string | null
+  model?: string | null
+  est_list_usd?: number | null
+  cost_source?: string | null
   error: string | null
+  hint?: string | null
 }
+
+export type CompareObjectiveSummary = {
+  fastest_target_id?: string | null
+  cheapest_target_id?: string | null
+  fewest_tokens_target_id?: string | null
+  note?: string
+}
+
+export type CompareCostEstimate = {
+  usd_per_1m_tokens?: number | null
+  cost_source?: string | null
+  note?: string | null
+}
+
+export type ReplayResultRow = CompareResultRow
 
 export type ReplayRunResponse = {
   request_id?: string
   error?: string | null
+  question?: string | null
+  track_in_dashboard?: boolean
+  objective_summary?: CompareObjectiveSummary | null
+  cost_estimate?: CompareCostEstimate | null
+  tracking_note?: string | null
   results: ReplayResultRow[]
 }
 
-export type BenchmarkResultRow = {
-  target_id: string
-  label: string
-  status_code: number | null
-  latency_ms: number
-  usage: { input_tokens?: unknown; output_tokens?: unknown; total_tokens?: unknown } | null
-  response_preview?: string | null
-  error: string | null
-}
+export type BenchmarkResultRow = CompareResultRow
 
 export type BenchmarkPromptResponse = {
   error?: string | null
   hint?: string
   note?: string
+  question?: string | null
+  track_in_dashboard?: boolean
+  objective_summary?: CompareObjectiveSummary | null
+  cost_estimate?: CompareCostEstimate | null
+  tracking_note?: string | null
   results: BenchmarkResultRow[]
 }
 
@@ -286,6 +329,7 @@ export async function postBenchmarkPrompt(body: {
   max_tokens?: number
   temperature?: number
   target_ids?: string[]
+  track_in_dashboard?: boolean
 }): Promise<BenchmarkPromptResponse> {
   const res = await fetch('/api/v1/benchmark/prompt', {
     method: 'POST',
@@ -314,6 +358,8 @@ export type TraceDetailResponse = {
   record?: Record<string, unknown>
   request_json?: unknown
   response_json?: unknown
+  /** Full response string when JSON parse fails or for quick display */
+  response_raw?: string | null
   reasoning_summary?: string | null
   internal_lineage?: { step: string; detail: string }[]
   lineage_graph?: LineageGraph | null
@@ -380,6 +426,19 @@ export type RuntimeFlowResponse = {
   note?: string | null
 }
 
+export type TelemetryHierarchyNode = {
+  id: string
+  kind: string
+  label: string
+  detail?: string | null
+  meta?: string | null
+}
+
+export type TelemetryHierarchyGraph = {
+  nodes: TelemetryHierarchyNode[]
+  edges: { from: string; to: string }[]
+}
+
 export type GovernanceLineageResponse = {
   inference_table: string | null
   inference_table_fqns?: string[] | null
@@ -390,6 +449,8 @@ export type GovernanceLineageResponse = {
   error: string | null
   hint: string
   runtime_flow: RuntimeFlowResponse
+  telemetry_hierarchy?: TelemetryHierarchyGraph | null
+  has_uc_lineage?: boolean
   system_tables_doc_url: string
   lineage_system_table_doc_url: string
   uc_lineage_query_error: string | null
@@ -463,11 +524,12 @@ export type AgentsCatalogResponse = {
 
 export type AnalyticsAgentOpts = {
   agent?: string | null
-  /** When set, repeated as `agents=` query params (combined Cost/Traces). */
   agents?: string[] | null
-  /** URL `task` / pinned request — narrows cost summary to this request_id. */
+  /** Single pinned request (legacy). */
   task?: string | null
   requestId?: string | null
+  /** Multiple pinned requests — combined cost/tokens (OR). */
+  tasks?: string[] | null
 }
 
 function appendAnalyticsScope(q: URLSearchParams, opts?: AnalyticsAgentOpts) {
@@ -478,8 +540,14 @@ function appendAnalyticsScope(q: URLSearchParams, opts?: AnalyticsAgentOpts) {
   } else if (opts?.agent) {
     q.set('agent', opts.agent)
   }
-  const rid = (opts?.task?.trim() || opts?.requestId?.trim()) ?? ''
-  if (rid) q.set('task', rid)
+  if (opts?.tasks?.length) {
+    for (const t of opts.tasks) {
+      if (t?.trim()) q.append('tasks', t.trim())
+    }
+  } else {
+    const rid = (opts?.task?.trim() || opts?.requestId?.trim()) ?? ''
+    if (rid) q.set('task', rid)
+  }
 }
 
 export async function fetchHealthTimeseries(
@@ -539,11 +607,18 @@ export async function fetchReplayTargets(): Promise<ReplayTargetsResponse> {
   return parseJson<ReplayTargetsResponse>(res)
 }
 
-export async function postReplayRun(requestId: string, targetIds?: string[]): Promise<ReplayRunResponse> {
+export async function postReplayRun(
+  requestId: string,
+  options?: { targetIds?: string[]; trackInDashboard?: boolean },
+): Promise<ReplayRunResponse> {
   const res = await fetch('/api/v1/replay/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ request_id: requestId, target_ids: targetIds ?? null }),
+    body: JSON.stringify({
+      request_id: requestId,
+      target_ids: options?.targetIds ?? null,
+      track_in_dashboard: options?.trackInDashboard ?? false,
+    }),
   })
   return parseJson<ReplayRunResponse>(res)
 }

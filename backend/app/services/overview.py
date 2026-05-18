@@ -10,7 +10,14 @@ from pydantic import BaseModel, Field
 from app.config import get_settings
 from app.services.analytics import ai_gateway_token_snapshots, ai_gateway_usage_rollup, quality_observability
 from app.services.databricks_status import sql_probe
-from app.services.inference import inference_agent_rollups, inference_fqn_list, inference_metrics
+from app.services.inference import (
+    count_since_hours,
+    discovered_payload_table_count,
+    inference_agent_rollups,
+    inference_fqn_list,
+    inference_metrics,
+    inference_query_table_sql,
+)
 
 
 class OverviewDTO(BaseModel):
@@ -31,6 +38,9 @@ class OverviewDTO(BaseModel):
     gateway_tokens_24h: int | None = None
     gateway_tokens_7d: int | None = None
     gateway_usage_error: str | None = None
+    window_hours: int = 168
+    count_window: int | None = None
+    gateway_tokens_window: int | None = None
 
 
 def _synthetic_overview(probe: dict, configured: bool) -> OverviewDTO:
@@ -65,7 +75,8 @@ def _hint_from_inference(inf: dict) -> str | None:
     return None
 
 
-def build_overview() -> OverviewDTO:
+def build_overview(*, window_hours: int = 168) -> OverviewDTO:
+    wh = max(1, min(24 * 90, int(window_hours)))
     s = get_settings()
     probe = sql_probe()
     reachable = probe.get("sql_reachable")
@@ -133,6 +144,18 @@ def build_overview() -> OverviewDTO:
         gw_rollup = ai_gateway_usage_rollup(24)
         gw_models = (gw_rollup.get("by_model") or []) if not gw_rollup.get("error") else []
         gw_req = int(gw_rollup.get("total_requests") or 0) if not gw_rollup.get("error") else 0
+        gw_window = ai_gateway_usage_rollup(wh)
+        gw_tokens_window = (
+            int(gw_window.get("total_tokens") or 0) if not gw_window.get("error") else None
+        )
+        count_window: int | None = None
+        fqns, _fqnote = inference_fqn_list()
+        if fqns and inf.get("time_column"):
+            try:
+                table_sql = inference_query_table_sql(fqns)
+                count_window, _ = count_since_hours(table_sql, str(inf["time_column"]), wh)
+            except ValueError:
+                count_window = None
 
         req24 = int(c24) if c24 is not None else 0
         req_src = "inference_table"
@@ -145,9 +168,10 @@ def build_overview() -> OverviewDTO:
         )
         n_roll = len(rollups) if rollups else 0
         n_gw = len(gw_models)
-        fqns, _fqnote = inference_fqn_list()
         n_f = len(fqns) if fqns else 0
-        n_agents = max(n_f, n_gw, n_roll if roll_has_traffic else 0)
+        n_discovered = int(inf.get("tables_discovered_count") or 0) or discovered_payload_table_count()
+        # One payload table per AI Gateway route (includes idle tables).
+        n_agents = max(n_discovered, n_f, 0) if (n_discovered or n_f) else max(n_gw, n_roll if roll_has_traffic else 0, 0)
         if n_agents == 0:
             n_agents = max(1, min(99, req24 // 500 + 1))
 
@@ -175,6 +199,9 @@ def build_overview() -> OverviewDTO:
             gateway_tokens_24h=snap.get("total_tokens_24h") if not snap.get("error") else None,
             gateway_tokens_7d=snap.get("total_tokens_7d") if not snap.get("error") else None,
             gateway_usage_error=snap.get("error"),
+            window_hours=wh,
+            count_window=count_window,
+            gateway_tokens_window=gw_tokens_window,
         )
 
     # SQL works; inference missing or misconfigured

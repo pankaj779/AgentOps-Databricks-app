@@ -7,42 +7,107 @@ import time
 from pathlib import Path
 from typing import Any
 
-import httpx
 from pydantic import BaseModel, Field
 
-from app.config import get_settings
+from app.config import BACKEND_ROOT, get_settings
 from app.services.analytics import trace_detail
-
-_BACKEND_DIR = Path(__file__).resolve().parent.parent
+from app.services.compare_run import (
+    apply_tracking_stamps,
+    compute_objective_summary,
+    cost_estimate_meta,
+    execute_all_targets,
+    extract_question_from_payload,
+    tracking_headers,
+)
 
 
 class ReplayTargetSpec(BaseModel):
     id: str
     label: str
     url: str
+    #: When set, overrides request JSON ``model`` (required when every target shares one gateway URL).
+    model: str | None = None
     timeout_sec: float = Field(default=120.0, ge=1.0, le=600.0)
     headers: dict[str, str] = Field(default_factory=dict)
+
+
+def _normalize_bearer_token(raw: str) -> str:
+    t = raw.strip()
+    if t.lower().startswith("bearer "):
+        return t[7:].strip()
+    return t
+
+
+def _ai_gateway_token() -> str:
+    s = get_settings()
+    tok = _normalize_bearer_token(s.databricks_ai_gateway_token) or _normalize_bearer_token(
+        s.databricks_token,
+    )
+    return tok
+
+
+def _merge_auth_headers(headers: dict[str, str], *, track_in_dashboard: bool) -> dict[str, str]:
+    """Attach PAT for Databricks AI Gateway HTTP calls (replay targets omit secrets)."""
+    out = dict(headers or {})
+    out.setdefault("Content-Type", "application/json")
+    tok = _ai_gateway_token()
+    if tok:
+        out["Authorization"] = f"Bearer {tok}"
+    out.update(tracking_headers(track_in_dashboard))
+    return out
+
+
+def _payload_for_target(body: dict[str, Any], target: ReplayTargetSpec) -> dict[str, Any]:
+    payload = json.loads(json.dumps(body))
+    if target.model and str(target.model).strip():
+        payload["model"] = str(target.model).strip()
+    return payload
+
+
+def _replay_target_file_candidates() -> list[Path]:
+    """All plausible locations for replay_targets.json (cwd, backend/, backend/app/)."""
+    s = get_settings()
+    name = (s.replay_targets_file or "replay_targets.json").strip() or "replay_targets.json"
+    here = Path(__file__).resolve()
+    roots: list[Path] = [
+        BACKEND_ROOT,
+        BACKEND_ROOT.parent,
+        here.parents[2] if len(here.parents) > 2 else BACKEND_ROOT,
+        here.parents[1] if len(here.parents) > 1 else BACKEND_ROOT,
+        Path.cwd(),
+        Path.cwd() / "backend",
+        Path.cwd() / "backend" / "app",
+    ]
+    seen: set[str] = set()
+    out: list[Path] = []
+    for root in roots:
+        try:
+            p = (root / name).resolve()
+        except OSError:
+            continue
+        key = str(p).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
 
 
 def _replay_targets_json_raw() -> tuple[str, str, list[str]]:
     """Return (raw_json, primary_source_label, notes). File is tried first; env JSON used if file missing/empty."""
     s = get_settings()
     notes: list[str] = []
-    fpath = (s.replay_targets_file or "").strip()
-    if fpath:
-        p = Path(fpath)
-        if not p.is_absolute():
-            p = _BACKEND_DIR / p
-        if p.is_file():
-            try:
-                txt = p.read_text(encoding="utf-8").strip()
-                if txt:
-                    return txt, str(p), notes
-                notes.append(f"empty_file:{p}")
-            except OSError as e:
-                notes.append(f"read_error:{p}:{e}")
-        else:
+    for p in _replay_target_file_candidates():
+        if not p.is_file():
             notes.append(f"missing_file:{p}")
+            continue
+        try:
+            txt = p.read_text(encoding="utf-8").strip()
+            if txt:
+                return txt, str(p), notes
+            notes.append(f"empty_file:{p}")
+        except OSError as e:
+            notes.append(f"read_error:{p}:{e}")
     raw = (s.replay_targets_json or "").strip()
     if raw.startswith("\ufeff"):
         raw = raw.lstrip("\ufeff")
@@ -50,6 +115,15 @@ def _replay_targets_json_raw() -> tuple[str, str, list[str]]:
         raw = raw[1:-1].strip()
     if raw:
         return raw, "AGENTOPS_REPLAY_TARGETS_JSON", notes
+    default_json = BACKEND_ROOT / "replay_targets.json"
+    if default_json.is_file():
+        try:
+            txt = default_json.read_text(encoding="utf-8").strip()
+            if txt:
+                notes.append("auto:replay_targets.json (no env var set)")
+                return txt, str(default_json), notes
+        except OSError as e:
+            notes.append(f"auto_read_error:{e}")
     return "", "none", notes
 
 
@@ -84,8 +158,27 @@ def load_replay_targets() -> list[ReplayTargetSpec]:
 def replay_targets_public() -> dict[str, Any]:
     raw, src, load_notes = _replay_targets_json_raw()
     targets, parse_err = _parse_replay_targets_list(raw)
+    s = get_settings()
+    sql_tok = _normalize_bearer_token(s.databricks_token)
+    gw_tok = _ai_gateway_token()
     out: dict[str, Any] = {
-        "targets": [{"id": t.id, "label": t.label} for t in targets],
+        "targets": [
+            {"id": t.id, "label": t.label, "model": t.model, "url": t.url}
+            for t in targets
+        ],
+        "auth": {
+            "sql_token_configured": bool(sql_tok),
+            "gateway_token_configured": bool(gw_tok),
+            "uses_separate_gateway_token": bool(_normalize_bearer_token(s.databricks_ai_gateway_token)),
+            "bearer_sent_on_replay": bool(gw_tok),
+            "hint": (
+                "SQL uses DATABRICKS_TOKEN; replay/benchmark uses DATABRICKS_AI_GATEWAY_TOKEN "
+                "if set, else DATABRICKS_TOKEN. Gateway PAT needs scope ai-gateway; SQL PAT needs sql "
+                "(and unity-catalog for UC tables / system.billing for Cost)."
+            )
+            if gw_tok
+            else "Set DATABRICKS_TOKEN or DATABRICKS_AI_GATEWAY_TOKEN in backend/.env",
+        },
     }
     if not targets:
         diag: dict[str, Any] = {"configured_from": src, "raw_length": len(raw), "load_notes": load_notes}
@@ -107,29 +200,27 @@ def replay_targets_public() -> dict[str, Any]:
     return out
 
 
-def _usage_from_response_body(text: str) -> dict[str, Any] | None:
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    usage = data.get("usage")
-    if not isinstance(usage, dict):
-        return None
-    inp = usage.get("prompt_tokens")
-    if inp is None:
-        inp = usage.get("input_tokens")
-    out_t = usage.get("completion_tokens")
-    if out_t is None:
-        out_t = usage.get("output_tokens")
-    tot = usage.get("total_tokens")
-    return {
-        "input_tokens": inp,
-        "output_tokens": out_t,
-        "total_tokens": tot,
-    }
+def _run_targets(
+    *,
+    base_payload: dict[str, Any],
+    targets: list[ReplayTargetSpec],
+    track_in_dashboard: bool,
+) -> list[dict[str, Any]]:
+    return execute_all_targets(
+        targets,
+        base_payload=base_payload,
+        track_in_dashboard=track_in_dashboard,
+        merge_auth_headers=_merge_auth_headers,
+        payload_for_target=_payload_for_target,
+    )
 
 
-def run_replay(request_id: str, target_ids: list[str] | None = None) -> dict[str, Any]:
+def run_replay(
+    request_id: str,
+    target_ids: list[str] | None = None,
+    *,
+    track_in_dashboard: bool = False,
+) -> dict[str, Any]:
     """POST logged `request_json` to each configured target; return timings + parsed usage."""
     detail = trace_detail(request_id)
     if detail.get("error"):
@@ -154,39 +245,25 @@ def run_replay(request_id: str, target_ids: list[str] | None = None) -> dict[str
     if not targets:
         return {"error": "no_replay_targets_configured", "request_id": request_id, "results": []}
 
-    results: list[dict[str, Any]] = []
-    with httpx.Client(follow_redirects=True) as client:
-        for t in targets:
-            headers = {"Content-Type": "application/json", **t.headers}
-            t0 = time.monotonic()
-            try:
-                r = client.post(t.url, json=body, headers=headers, timeout=t.timeout_sec)
-                dt_ms = (time.monotonic() - t0) * 1000.0
-                usage = _usage_from_response_body(r.text)
-                err_s: str | None = None
-                if not r.is_success:
-                    err_s = (r.text or r.reason_phrase or "HTTP error")[:800]
-                results.append(
-                    {
-                        "target_id": t.id,
-                        "label": t.label,
-                        "status_code": r.status_code,
-                        "latency_ms": round(dt_ms, 2),
-                        "usage": usage,
-                        "error": err_s,
-                    },
-                )
-            except Exception as e:  # noqa: BLE001
-                dt_ms = (time.monotonic() - t0) * 1000.0
-                results.append(
-                    {
-                        "target_id": t.id,
-                        "label": t.label,
-                        "status_code": None,
-                        "latency_ms": round(dt_ms, 2),
-                        "usage": None,
-                        "error": str(e).strip()[:800],
-                    },
-                )
-
-    return {"request_id": request_id, "results": results, "error": None}
+    base = body if isinstance(body, dict) else {}
+    question = extract_question_from_payload(base)
+    results = _run_targets(
+        base_payload=base,
+        targets=targets,
+        track_in_dashboard=track_in_dashboard,
+    )
+    cost_meta = cost_estimate_meta()
+    return {
+        "request_id": request_id,
+        "results": results,
+        "question": question,
+        "track_in_dashboard": track_in_dashboard,
+        "objective_summary": compute_objective_summary(results),
+        "cost_estimate": cost_meta,
+        "tracking_note": (
+            "Databricks may still log inference payloads and bill tokens. "
+            "AgentOps hides tests from dashboard lists when Track is off and "
+            "AGENTOPS_EXCLUDE_TEST_REQUESTS=true."
+        ),
+        "error": None,
+    }

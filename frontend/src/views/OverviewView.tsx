@@ -11,6 +11,7 @@ import {
   fetchOverview,
 } from '@/lib/api'
 import { NAV_PATHS } from '@/lib/navigation'
+import { TIME_RANGE_OPTIONS, timeRangeLabel, type TimeRangeHours } from '@/lib/timeRange'
 
 function formatNumber(n: number) {
   return new Intl.NumberFormat().format(n)
@@ -43,6 +44,7 @@ export function OverviewView() {
   const [diagLoading, setDiagLoading] = useState(false)
   const [diag, setDiag] = useState<Record<string, unknown> | null>(null)
   const [catalogSearch, setCatalogSearch] = useState('')
+  const [hours, setHours] = useState<TimeRangeHours>(168)
 
   const topAgents = useMemo(() => {
     return [...dashboardAgents].sort((a, b) => b.rpm - a.rpm).slice(0, 5)
@@ -70,7 +72,7 @@ export function OverviewView() {
     setLoading(true)
     try {
       const [o, a, c] = await Promise.all([
-        fetchOverview(),
+        fetchOverview(hours),
         fetchAgents(),
         fetchAgentsCatalog().catch(() => ({ agents: [] })),
       ])
@@ -83,7 +85,7 @@ export function OverviewView() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [hours])
 
   useEffect(() => {
     void loadData()
@@ -141,11 +143,26 @@ export function OverviewView() {
       label: 'Requests (24h)',
       value: formatNumber(overview.requests_24h),
     },
-    ...(overview.count_7d != null
+    ...(overview.count_window != null
       ? [
           {
-            label: 'Requests (7d)',
-            value: formatNumber(overview.count_7d),
+            label: `Requests (${timeRangeLabel(overview.window_hours ?? hours)})`,
+            value: formatNumber(overview.count_window),
+          },
+        ]
+      : overview.count_7d != null
+        ? [
+            {
+              label: 'Requests (7d)',
+              value: formatNumber(overview.count_7d),
+            },
+          ]
+        : []),
+    ...(overview.gateway_tokens_window != null
+      ? [
+          {
+            label: `Gateway tokens (${timeRangeLabel(overview.window_hours ?? hours)})`,
+            value: formatNumber(overview.gateway_tokens_window),
           },
         ]
       : []),
@@ -203,13 +220,30 @@ export function OverviewView() {
             {modeLabel(overview.data_mode, overview.requests_24h_source)}
           </Badge>
         </div>
-        <button
-          type="button"
-          onClick={() => void loadData()}
-          className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-xs font-medium text-[var(--color-fg)] hover:bg-[var(--color-surface-elevated)]"
-        >
-          Refresh data
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-xs text-[var(--color-muted)]" htmlFor="overview-hours">
+            Time range
+          </label>
+          <select
+            id="overview-hours"
+            value={hours}
+            onChange={(e) => setHours(Number(e.target.value) as TimeRangeHours)}
+            className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-xs"
+          >
+            {TIME_RANGE_OPTIONS.map((o) => (
+              <option key={o.hours} value={o.hours}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => void loadData()}
+            className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-xs font-medium text-[var(--color-fg)] hover:bg-[var(--color-surface-elevated)]"
+          >
+            Refresh data
+          </button>
+        </div>
       </div>
 
       {overview.inference_setup_hint ? (

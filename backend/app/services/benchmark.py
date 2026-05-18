@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
-import httpx
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
-from app.services.replay import load_replay_targets, _usage_from_response_body
+from app.services.compare_run import (
+    compute_objective_summary,
+    cost_estimate_meta,
+    execute_all_targets,
+    extract_question_from_payload,
+)
+from app.services.replay import (
+    _merge_auth_headers,
+    _payload_for_target,
+    load_replay_targets,
+)
 
 
 class BenchmarkPromptBody(BaseModel):
@@ -17,6 +25,10 @@ class BenchmarkPromptBody(BaseModel):
     max_tokens: int = Field(default=256, ge=1, le=8192)
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     target_ids: list[str] | None = Field(default=None, description="Subset of replay target ids")
+    track_in_dashboard: bool = Field(
+        default=False,
+        description="When true, test rows remain visible in Agents/Overview trace lists.",
+    )
 
 
 def run_prompt_benchmark(body: BenchmarkPromptBody) -> dict[str, Any]:
@@ -40,48 +52,33 @@ def run_prompt_benchmark(body: BenchmarkPromptBody) -> dict[str, Any]:
             "results": [],
         }
 
-    payload: dict[str, Any] = {
+    base_payload: dict[str, Any] = {
         "model": "agentops-benchmark",
         "messages": body.messages,
         "max_tokens": body.max_tokens,
         "temperature": body.temperature,
     }
-    results: list[dict[str, Any]] = []
-    with httpx.Client(follow_redirects=True) as client:
-        for t in targets:
-            headers = {"Content-Type": "application/json", **t.headers}
-            t0 = time.monotonic()
-            try:
-                r = client.post(t.url, json=payload, headers=headers, timeout=t.timeout_sec)
-                dt_ms = (time.monotonic() - t0) * 1000.0
-                usage = _usage_from_response_body(r.text)
-                err_s: str | None = None
-                if not r.is_success:
-                    err_s = (r.text or r.reason_phrase or "HTTP error")[:800]
-                preview = (r.text or "")[:400].replace("\n", " ") if r.is_success else None
-                results.append(
-                    {
-                        "target_id": t.id,
-                        "label": t.label,
-                        "status_code": r.status_code,
-                        "latency_ms": round(dt_ms, 2),
-                        "usage": usage,
-                        "response_preview": preview,
-                        "error": err_s,
-                    },
-                )
-            except Exception as e:  # noqa: BLE001
-                dt_ms = (time.monotonic() - t0) * 1000.0
-                results.append(
-                    {
-                        "target_id": t.id,
-                        "label": t.label,
-                        "status_code": None,
-                        "latency_ms": round(dt_ms, 2),
-                        "usage": None,
-                        "response_preview": None,
-                        "error": str(e).strip()[:800],
-                    },
-                )
+    question = extract_question_from_payload(base_payload)
+    results = execute_all_targets(
+        targets,
+        base_payload=base_payload,
+        track_in_dashboard=body.track_in_dashboard,
+        merge_auth_headers=_merge_auth_headers,
+        payload_for_target=_payload_for_target,
+    )
+    cost_meta = cost_estimate_meta()
 
-    return {"error": None, "results": results, "note": "Same JSON body sent to each target; compare usage + latency."}
+    return {
+        "error": None,
+        "results": results,
+        "question": question,
+        "track_in_dashboard": body.track_in_dashboard,
+        "objective_summary": compute_objective_summary(results),
+        "cost_estimate": cost_meta,
+        "note": "Same JSON body sent to each target; compare usage, cost estimate, latency, and answers.",
+        "tracking_note": (
+            "Databricks may still log inference payloads and bill tokens. "
+            "AgentOps hides tests from dashboard lists when Track is off and "
+            "AGENTOPS_EXCLUDE_TEST_REQUESTS=true."
+        ),
+    }

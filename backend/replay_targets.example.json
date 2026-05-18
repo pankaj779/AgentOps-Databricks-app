@@ -1,8 +1,17 @@
 [
   {
-    "id": "demo",
-    "label": "Local OpenAI-compatible server",
-    "url": "http://127.0.0.1:8080/v1/chat/completions",
+    "id": "meta-llama-model",
+    "label": "meta-llama-model",
+    "url": "https://YOUR-WORKSPACE.cloud.databricks.com/ai-gateway/mlflow/v1/chat/completions",
+    "model": "meta-llama-model",
+    "headers": {},
+    "timeout_sec": 120
+  },
+  {
+    "id": "gemma-3-model",
+    "label": "gemma-3-model",
+    "url": "https://YOUR-WORKSPACE.cloud.databricks.com/ai-gateway/mlflow/v1/chat/completions",
+    "model": "gemma-3-model",
     "headers": {},
     "timeout_sec": 120
   }

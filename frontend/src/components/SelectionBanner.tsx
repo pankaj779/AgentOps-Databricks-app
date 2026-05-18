@@ -11,11 +11,11 @@ function summarizeAgent(key: string): string {
 }
 
 export function SelectionBanner() {
-  const { agents, task, clearAll, setTask } = useWorkspaceSelection()
+  const { agents, tasks, clearAll, setTasks } = useWorkspaceSelection()
   const loc = useLocation()
   const qs = loc.search || ''
 
-  if (!agents.length && !task) return null
+  if (!agents.length && !tasks.length) return null
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface)]/90 px-6 py-2.5 text-sm">
@@ -35,16 +35,19 @@ export function SelectionBanner() {
             ) : null}
           </span>
         ) : null}
-        {task ? (
+        {tasks.length ? (
           <Badge tone="neutral" className="font-mono text-[11px]">
-            task {task.slice(0, 20)}
-            {task.length > 20 ? '…' : ''}
+            {tasks.length === 1
+              ? `task ${tasks[0].slice(0, 18)}${tasks[0].length > 18 ? '…' : ''}`
+              : `${tasks.length} tasks pinned`}
           </Badge>
         ) : null}
         <span className="text-[11px] text-[var(--color-muted)]">
-          {agents.length > 1
-            ? 'Cost & traces use the combined scope (OR). Open a trace for per-request tokens.'
-            : 'Charts and traces below respect this scope. Open a trace to pin a task.'}
+          {tasks.length > 1
+            ? 'Cost sums pinned requests. Agents use OR scope.'
+            : agents.length > 1
+              ? 'Cost & traces: combined agents (OR).'
+              : 'Scope applies to charts below.'}
         </span>
         <Link
           to={{ pathname: NAV_PATHS.agents, search: qs }}
@@ -78,13 +81,13 @@ export function SelectionBanner() {
         >
           Lineage
         </Link>
-        {task ? (
+        {tasks.length ? (
           <button
             type="button"
-            onClick={() => setTask(null)}
+            onClick={() => setTasks([])}
             className="rounded-md border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-fg)] hover:bg-[var(--color-surface-elevated)]"
           >
-            Clear task
+            Clear tasks
           </button>
         ) : null}
         <button

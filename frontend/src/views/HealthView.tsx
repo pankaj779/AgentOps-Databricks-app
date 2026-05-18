@@ -11,10 +11,12 @@ import {
   YAxis,
 } from 'recharts'
 import { Card } from '@/components/ui/Card'
+import { DataLoadingState } from '@/components/ui/DataLoadingState'
 import { Badge } from '@/components/ui/Badge'
 import { useWorkspaceSelection } from '@/context/WorkspaceSelectionContext'
 import type { AgentSummary, CostSummaryResponse, HealthSloResponse, HealthTimeseriesResponse } from '@/lib/api'
 import { fetchAgents, fetchCostSummary, fetchHealthSlo, fetchHealthTimeseries } from '@/lib/api'
+import { TIME_RANGE_OPTIONS, type TimeRangeHours } from '@/lib/timeRange'
 
 function shortBucket(iso: string) {
   try {
@@ -37,16 +39,19 @@ export function HealthView() {
   const [slo, setSlo] = useState<HealthSloResponse | null>(null)
   const [cost, setCost] = useState<CostSummaryResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [hours, setHours] = useState<TimeRangeHours>(168)
 
   useEffect(() => {
     let cancelled = false
+    setLoading(true)
     ;(async () => {
       try {
         const [a, t, s, c] = await Promise.all([
           fetchAgents(),
-          fetchHealthTimeseries(168, { agents: scopeAgents.length ? scopeAgents : null }),
+          fetchHealthTimeseries(hours, { agents: scopeAgents.length ? scopeAgents : null }),
           fetchHealthSlo(2000, 1, { agents: scopeAgents.length ? scopeAgents : null }),
-          fetchCostSummary(168, { agents: scopeAgents.length ? scopeAgents : null }),
+          fetchCostSummary(hours, { agents: scopeAgents.length ? scopeAgents : null }),
         ])
         if (!cancelled) {
           setAgentList(a)
@@ -57,12 +62,14 @@ export function HealthView() {
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load')
+      } finally {
+        if (!cancelled) setLoading(false)
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [scopeAgents.join('\0')])
+  }, [scopeAgents.join('\0'), hours])
 
   const tsErr = ts?.error
   const sloErr = slo?.error
@@ -75,6 +82,23 @@ export function HealthView() {
 
   return (
     <div className="space-y-6 p-6">
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="text-xs text-[var(--color-muted)]" htmlFor="health-hours">
+          Time range
+        </label>
+        <select
+          id="health-hours"
+          value={hours}
+          onChange={(e) => setHours(Number(e.target.value) as TimeRangeHours)}
+          className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-xs"
+        >
+          {TIME_RANGE_OPTIONS.map((o) => (
+            <option key={o.hours} value={o.hours}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </div>
       {error ? (
         <p className="text-sm text-[var(--color-danger)]">{error}</p>
       ) : null}
@@ -84,19 +108,21 @@ export function HealthView() {
         </p>
       ) : null}
 
+      <DataLoadingState loading={loading} label="Loading health metrics…">
       {cost?.billing && !cost.billing.error && cost.billing.total_list_usd != null ? (
         <Card title="Model serving spend (list price)">
           <div className="text-2xl font-semibold tabular-nums text-[var(--color-fg)]">
             {cost.billing.currency_code} {cost.billing.total_list_usd.toFixed(4)}
           </div>
           <div className="mt-1 text-xs text-[var(--color-muted)]">
-            {cost.billing.total_dbu != null ? `${cost.billing.total_dbu.toFixed(6)} DBU` : ''} · same window as Cost tab
+            {cost.billing.total_dbu != null ? `${cost.billing.total_dbu.toFixed(6)} DBU` : ''} · from system.billing
+            (DBU × list price) — separate from token estimate below
           </div>
         </Card>
       ) : null}
 
       {cost?.ai_gateway && !cost.ai_gateway.error ? (
-        <Card title="AI Gateway tokens (7d)">
+        <Card title="AI Gateway tokens">
           <div className="flex flex-wrap gap-6 text-sm">
             <div>
               <div className="text-[11px] font-semibold uppercase text-[var(--color-muted)]">Total tokens</div>
@@ -110,7 +136,22 @@ export function HealthView() {
                 {(cost.ai_gateway.total_requests ?? 0).toLocaleString()}
               </div>
             </div>
+            {cost.token_cost_estimate?.estimated_usd != null ? (
+              <div>
+                <div className="text-[11px] font-semibold uppercase text-[var(--color-muted)]">
+                  Est. @ ${cost.token_cost_estimate.usd_per_1m_tokens ?? 0.7}/1M tokens
+                </div>
+                <div className="text-2xl font-semibold tabular-nums text-[var(--color-teal)]">
+                  USD {cost.token_cost_estimate.estimated_usd.toFixed(4)}
+                </div>
+              </div>
+            ) : null}
           </div>
+          {cost.token_cost_estimate?.estimated_usd != null ? (
+            <p className="mt-2 text-[11px] text-[var(--color-muted)]">
+              tokens × (${cost.token_cost_estimate.usd_per_1m_tokens ?? 0.7} / 1,000,000) — same as model compare
+            </p>
+          ) : null}
         </Card>
       ) : null}
 
@@ -144,7 +185,7 @@ export function HealthView() {
               </li>
             </ul>
           ) : (
-            <p className="text-sm text-[var(--color-muted)]">Loading…</p>
+            <p className="text-sm text-[var(--color-muted)]">No SLO data.</p>
           )}
         </Card>
 
@@ -238,6 +279,7 @@ export function HealthView() {
           </table>
         </div>
       </Card>
+      </DataLoadingState>
     </div>
   )
 }

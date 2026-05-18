@@ -20,6 +20,9 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: `http://127.0.0.1:${apiPort}`,
           changeOrigin: true,
+          // Replay/benchmark fan-out can take 30–90s (5 models × gateway latency)
+          timeout: 600_000,
+          proxyTimeout: 600_000,
         },
       },
     },

@@ -11,6 +11,7 @@ import {
   YAxis,
 } from 'recharts'
 import { X } from 'lucide-react'
+import { ModelCompareResults } from '@/components/ModelCompareResults'
 import { RequestLineageGraph } from '@/components/RequestLineageGraph'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
@@ -493,6 +494,19 @@ export function QualityView() {
               {detail?.error ? (
                 <p className="text-[var(--color-danger)]">{detail.error}</p>
               ) : null}
+              {!loadingDetail && !detail?.comparison_group_id && detail?.request_id ? (
+                <div className="mb-4 rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface-elevated)]/40 p-3 text-xs text-[var(--color-muted)]">
+                  <div className="font-semibold text-[var(--color-fg)]">Compare same task across models</div>
+                  <p className="mt-1">
+                    <strong className="text-[var(--color-fg)]">Live benchmark:</strong> edit
+                    <code className="text-[10px]"> backend/replay_targets.json</code> with your 5 gateway URLs, restart the API.
+                  </p>
+                  <p className="mt-1">
+                    <strong className="text-[var(--color-fg)]">Production compare:</strong> log the same
+                    <code className="text-[10px]"> comparison_group_id</code> on each route for the same question.
+                  </p>
+                </div>
+              ) : null}
               {!loadingDetail && detail?.comparison_group_id ? (
                 <div className="mb-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-elevated)]/50 p-3 text-xs">
                   <div className="font-semibold text-[var(--color-teal)]">Cross-model comparison</div>
@@ -571,24 +585,12 @@ export function QualityView() {
                   {replayResult?.error ? (
                     <p className="mt-2 text-[var(--color-warn-fg)]">{replayResult.error}</p>
                   ) : null}
-                  {(replayResult?.results?.length ?? 0) > 0 ? (
-                    <ul className="mt-2 space-y-1 text-[11px]">
-                      {replayResult!.results!.map((rr) => (
-                        <li key={rr.target_id} className="rounded border border-[var(--color-border)] px-2 py-1">
-                          <span className="font-medium text-[var(--color-fg)]">{rr.label}</span>{' '}
-                          <span className="text-[var(--color-muted)]">
-                            {rr.status_code != null ? `HTTP ${rr.status_code}` : '—'} · {Math.round(rr.latency_ms)} ms
-                          </span>
-                          {rr.usage?.total_tokens != null ? (
-                            <span className="ml-2 font-mono text-[var(--color-muted)]">
-                              tokens {String(rr.usage.total_tokens)}
-                            </span>
-                          ) : null}
-                          {rr.error ? <div className="text-[var(--color-danger)]">{rr.error}</div> : null}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
+                  <ModelCompareResults
+                    results={replayResult?.results ?? []}
+                    question={replayResult?.question}
+                    objectiveSummary={replayResult?.objective_summary}
+                    costEstimate={replayResult?.cost_estimate}
+                  />
                 </div>
               ) : null}
               {!loadingDetail && detail?.lineage_graph?.nodes?.length ? (
@@ -642,17 +644,23 @@ export function QualityView() {
                     Request JSON
                   </summary>
                   <pre className="mt-2 max-h-40 overflow-auto rounded-lg bg-black/20 p-2 text-[10px] text-[var(--color-muted)]">
-                    {JSON.stringify(detail.request_json, null, 2)}
+                    {typeof detail.request_json === 'string'
+                      ? detail.request_json
+                      : JSON.stringify(detail.request_json, null, 2)}
                   </pre>
                 </details>
               ) : null}
-              {detail?.response_json != null ? (
-                <details>
+              {detail?.response_json != null || detail?.response_raw ? (
+                <details open>
                   <summary className="cursor-pointer text-xs font-semibold text-[var(--color-teal)]">
-                    Response JSON (truncated in viewer)
+                    Response
                   </summary>
-                  <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-black/20 p-2 text-[10px] text-[var(--color-muted)]">
-                    {JSON.stringify(detail.response_json, null, 2).slice(0, 12000)}
+                  <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-black/20 p-2 text-[10px] text-[var(--color-muted)]">
+                    {detail.response_raw
+                      ? detail.response_raw
+                      : typeof detail.response_json === 'string'
+                        ? detail.response_json
+                        : JSON.stringify(detail.response_json, null, 2).slice(0, 12000)}
                   </pre>
                 </details>
               ) : null}

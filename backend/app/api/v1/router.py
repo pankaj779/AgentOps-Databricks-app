@@ -55,6 +55,9 @@ class OverviewResponse(BaseModel):
         default=None,
         description="Same as gateway_tokens_24h but 7d window",
     )
+    window_hours: int = 168
+    count_window: int | None = None
+    gateway_tokens_window: int | None = None
     gateway_usage_error: str | None = Field(
         default=None,
         description="SQL error when AI Gateway usage snapshot fails (permissions, etc.)",
@@ -173,11 +176,15 @@ def _synthetic_agent_rows() -> list[AgentSummary]:
 class ReplayRunBody(BaseModel):
     request_id: str = Field(min_length=1, max_length=256)
     target_ids: list[str] | None = Field(default=None, description="Subset of configured replay target ids")
+    track_in_dashboard: bool = Field(
+        default=False,
+        description="Keep test calls in Agents/Overview lists (gateway may still log either way).",
+    )
 
 
 @router.get("/overview", response_model=OverviewResponse)
-def overview() -> OverviewResponse:
-    dto = build_overview()
+def overview(hours: int = Query(168, ge=1, le=24 * 90)) -> OverviewResponse:
+    dto = build_overview(window_hours=hours)
     return OverviewResponse(
         generated_at=dto.generated_at,
         environment=dto.environment,
@@ -194,6 +201,9 @@ def overview() -> OverviewResponse:
         gateway_tokens_24h=dto.gateway_tokens_24h,
         gateway_tokens_7d=dto.gateway_tokens_7d,
         gateway_usage_error=dto.gateway_usage_error,
+        window_hours=dto.window_hours,
+        count_window=dto.count_window,
+        gateway_tokens_window=dto.gateway_tokens_window,
     )
 
 
@@ -383,17 +393,22 @@ def analytics_cost_summary(
     source_table: str | None = None,
     gateway_model: str | None = None,
     task: str | None = None,
+    tasks: list[str] | None = Query(None),
     request_id: str | None = None,
 ) -> dict[str, Any]:
     if not get_settings().databricks_token:
         return {"error": "DATABRICKS_TOKEN not configured"}
     infer, gw = _scope_from_request(agent, agents, source_table, gateway_model)
-    rid = (task or request_id or "").strip() or None
+    rid_list: list[str] = []
+    if tasks:
+        rid_list.extend(str(t).strip() for t in tasks if t and str(t).strip())
+    single = (task or request_id or "").strip()
     return cost_summary(
         hours=hours,
         source_tables=infer if infer else None,
         gateway_models=gw if gw else None,
-        request_id=rid,
+        request_id=single or None,
+        request_ids=rid_list if rid_list else None,
     )
 
 
@@ -445,7 +460,11 @@ def replay_targets() -> dict[str, Any]:
 def replay_run_endpoint(body: ReplayRunBody) -> dict[str, Any]:
     if not get_settings().databricks_token:
         return {"error": "DATABRICKS_TOKEN not configured", "results": []}
-    return run_replay(body.request_id, body.target_ids)
+    return run_replay(
+        body.request_id,
+        body.target_ids,
+        track_in_dashboard=body.track_in_dashboard,
+    )
 
 
 @router.get("/analytics/quality/observability")

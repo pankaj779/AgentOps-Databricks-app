@@ -116,6 +116,10 @@ def _ai_gateway_workspace_sql() -> str:
 def ai_gateway_token_snapshots() -> dict[str, Any]:
     """24h / 7d total token sums for overview cards (system.ai_gateway.usage)."""
     w = _ai_gateway_workspace_sql()
+    from app.services.compare_run import gateway_exclude_test_request_ids_clause
+
+    excl24 = gateway_exclude_test_request_ids_clause(24)
+    excl7d = gateway_exclude_test_request_ids_clause(24 * 7)
     out: dict[str, Any] = {
         "total_tokens_24h": None,
         "total_tokens_7d": None,
@@ -126,12 +130,12 @@ def ai_gateway_token_snapshots() -> dict[str, Any]:
             cur = conn.cursor()
             cur.execute(
                 "SELECT COALESCE(SUM(total_tokens), 0) FROM system.ai_gateway.usage "
-                f"WHERE event_time >= current_timestamp() - INTERVAL 24 HOURS{w}"
+                f"WHERE event_time >= current_timestamp() - INTERVAL 24 HOURS{w}{excl24}"
             )
             r24 = cur.fetchone()
             cur.execute(
                 "SELECT COALESCE(SUM(total_tokens), 0) FROM system.ai_gateway.usage "
-                f"WHERE event_time >= current_timestamp() - INTERVAL 7 DAYS{w}"
+                f"WHERE event_time >= current_timestamp() - INTERVAL 7 DAYS{w}{excl7d}"
             )
             r7 = cur.fetchone()
         if r24 and r24[0] is not None:
@@ -373,7 +377,7 @@ def comparison_group_detail(group_id: str) -> dict[str, Any]:
     g_esc = gid.replace("'", "''")
     sql = (
         f"SELECT * FROM {tbl} WHERE CAST(`{ccol}` AS STRING) = '{g_esc}' "
-        f"ORDER BY `{tc}` ASC NULLS LAST LIMIT 64"
+        f"{_ctx_test_excl(ctx)} ORDER BY `{tc}` ASC NULLS LAST LIMIT 64"
     )
     rq_col = _comparison_sql_column(ctx["cols"], "request_id")
     if not rq_col:
@@ -796,6 +800,7 @@ def ai_gateway_usage_rollup(
     gateway_models: list[str] | None = None,
     *,
     request_id: str | None = None,
+    request_ids: list[str] | None = None,
     gateway_no_rows: bool = False,
 ) -> dict[str, Any]:
     """Aggregate token usage by model from AI Gateway system table."""
@@ -811,12 +816,26 @@ def ai_gateway_usage_rollup(
         gm_clause = _gateway_models_sql_fragment(gm_models_eff)
     elif gateway_model and str(gateway_model).strip():
         gm_clause = _gateway_model_sql_fragment(str(gateway_model).strip())
+    rid_eff = _normalize_request_ids(request_id=request_id, request_ids=request_ids)
     rid_clause = ""
-    rid = (request_id or "").strip()
-    if rid:
-        esc = rid.replace("'", "''")
+    if len(rid_eff) == 1:
+        esc = rid_eff[0].replace("'", "''")
         rid_clause = f" AND request_id = '{esc}' "
+    elif len(rid_eff) > 1:
+        in_list = ",".join("'" + r.replace("'", "''") + "'" for r in rid_eff)
+        rid_clause = f" AND request_id IN ({in_list}) "
     no_row_clause = " AND 1=0 " if gateway_no_rows else ""
+    test_excl_gw = ""
+    if not rid_eff:
+        from app.services.compare_run import gateway_exclude_test_request_ids_clause
+
+        test_excl_gw = gateway_exclude_test_request_ids_clause(h)
+    # Pinned request(s): match by ID across all time — not only the rolling hours window.
+    time_clause = (
+        ""
+        if rid_eff
+        else f" AND event_time >= current_timestamp() - INTERVAL {h} HOURS "
+    )
     out: dict[str, Any] = {
         "hours": h,
         "total_requests": None,
@@ -828,14 +847,16 @@ def ai_gateway_usage_rollup(
         "note": "",
         "gateway_model_filter": gateway_model.strip() if gateway_model and str(gateway_model).strip() else None,
         "gateway_models_filter": gm_models_eff,
-        "gateway_request_id_filter": rid or None,
+        "gateway_request_id_filter": rid_eff[0] if len(rid_eff) == 1 else None,
+        "gateway_request_ids_filter": rid_eff if len(rid_eff) > 1 else None,
         "gateway_no_rows": bool(gateway_no_rows),
+        "gateway_time_filter_skipped": bool(rid_eff),
     }
+    where_body = f"WHERE 1=1{time_clause}{w}{gm_clause}{rid_clause}{test_excl_gw}{no_row_clause}"
     sql_tot = (
         "SELECT COUNT(*), "
         "COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0) "
-        "FROM system.ai_gateway.usage "
-        f"WHERE event_time >= current_timestamp() - INTERVAL {h} HOURS{w}{gm_clause}{rid_clause}{no_row_clause}"
+        f"FROM system.ai_gateway.usage {where_body}"
     )
     sql_by = (
         "SELECT "
@@ -846,9 +867,8 @@ def ai_gateway_usage_rollup(
         "COALESCE(SUM(input_tokens), 0) AS tin, "
         "COALESCE(SUM(output_tokens), 0) AS tout, "
         "COALESCE(SUM(total_tokens), 0) AS ttot "
-        "FROM system.ai_gateway.usage "
-        f"WHERE event_time >= current_timestamp() - INTERVAL {h} HOURS{w}{gm_clause}{rid_clause}{no_row_clause}"
-        "GROUP BY 1 ORDER BY ttot DESC NULLS LAST LIMIT 25"
+        f"FROM system.ai_gateway.usage {where_body}"
+        " GROUP BY 1 ORDER BY ttot DESC NULLS LAST LIMIT 25"
     )
     try:
         with sql_connection() as conn:
@@ -878,12 +898,46 @@ def ai_gateway_usage_rollup(
     return out
 
 
+def _normalize_request_ids(
+    request_id: str | None = None,
+    request_ids: list[str] | None = None,
+    *,
+    max_ids: int = 32,
+) -> list[str]:
+    """Sanitized unique request_id values for SQL IN / gateway filters."""
+    out: list[str] = []
+    seen: set[str] = set()
+    raw: list[str] = []
+    if request_ids:
+        raw.extend(str(x) for x in request_ids)
+    if request_id and str(request_id).strip():
+        raw.append(str(request_id).strip())
+    for r in raw:
+        rid = str(r or "").strip()
+        if not rid or not re.match(r"^[a-zA-Z0-9_\-\.]+$", rid):
+            continue
+        if rid in seen:
+            continue
+        seen.add(rid)
+        out.append(rid)
+        if len(out) >= max_ids:
+            break
+    return out
+
+
 def _inference_request_id_predicate(cmap: dict[str, str], request_id: str | None) -> str:
-    rid = (request_id or "").strip()
-    if not rid or "request_id" not in cmap:
+    ids = _normalize_request_ids(request_id=request_id)
+    return _inference_request_ids_predicate(cmap, ids)
+
+
+def _inference_request_ids_predicate(cmap: dict[str, str], request_ids: list[str]) -> str:
+    if not request_ids or "request_id" not in cmap:
         return ""
-    esc = rid.replace("'", "''")
-    return f" AND CAST(`{cmap['request_id']}` AS STRING) = '{esc}' "
+    if len(request_ids) == 1:
+        esc = request_ids[0].replace("'", "''")
+        return f" AND CAST(`{cmap['request_id']}` AS STRING) = '{esc}' "
+    in_list = ",".join("'" + r.replace("'", "''") + "'" for r in request_ids)
+    return f" AND CAST(`{cmap['request_id']}` AS STRING) IN ({in_list}) "
 
 
 def _distinct_destination_ids_from_inference(
@@ -1060,6 +1114,12 @@ def _build_request_lineage_graph(
     return {"nodes": nodes, "edges": edges}
 
 
+def _ctx_test_excl(ctx: dict[str, Any] | None) -> str:
+    if not ctx:
+        return ""
+    return str(ctx.get("test_excl") or "")
+
+
 def _inference_table_ctx() -> _CTX_OK | _CTX_ERR:
     s = get_settings()
     cache_key = "|".join(
@@ -1105,6 +1165,8 @@ def _inference_table_ctx() -> _CTX_OK | _CTX_ERR:
         cols = list(cols) + ["_agentops_source_table"]
     avail = set(cols)
     fqn_label = fqns[0] if len(fqns) == 1 else f"{len(fqns)} tables ({', '.join(x.split('.')[-1] for x in fqns)})"
+    from app.services.compare_run import test_request_sql_exclude_fragment
+
     ctx = {
         "fqn": fqns[0],
         "fqns": fqns,
@@ -1112,6 +1174,7 @@ def _inference_table_ctx() -> _CTX_OK | _CTX_ERR:
         "table_sql": table_sql,
         "time_col": time_col,
         "cols": cols,
+        "test_excl": test_request_sql_exclude_fragment(cols),
         "status_col": pick_col(avail, STATUS_CANDIDATES),
         "latency_col": pick_col(avail, LATENCY_CANDIDATES),
         "dest_col": pick_col(
@@ -1127,6 +1190,7 @@ def build_runtime_flow(ctx: dict[str, Any], days: int = 7) -> dict[str, Any]:
     """Observed AI Gateway / serving paths from logged traffic (works without UC system lineage)."""
     tbl = ctx["table_sql"]
     tc = ctx["time_col"]
+    tx = _ctx_test_excl(ctx)
     cmap = {c.lower(): c for c in ctx["cols"]}
     window = max(1, min(90, int(days)))
     out: dict[str, Any] = {
@@ -1143,12 +1207,12 @@ def build_runtime_flow(ctx: dict[str, Any], days: int = 7) -> dict[str, Any]:
         if has_req:
             sql0 = (
                 f"SELECT COUNT(DISTINCT `{cmap['requester']}`), COUNT(*) FROM {tbl} "
-                f"WHERE `{tc}` >= current_timestamp() - INTERVAL {window} DAYS"
+                f"WHERE `{tc}` >= current_timestamp() - INTERVAL {window} DAYS{tx}"
             )
         else:
             sql0 = (
                 f"SELECT CAST(NULL AS BIGINT), COUNT(*) FROM {tbl} "
-                f"WHERE `{tc}` >= current_timestamp() - INTERVAL {window} DAYS"
+                f"WHERE `{tc}` >= current_timestamp() - INTERVAL {window} DAYS{tx}"
             )
         dest_e = f"`{cmap['destination_id']}`" if "destination_id" in cmap else "CAST(NULL AS STRING)"
         url_e = f"`{cmap['url']}`" if "url" in cmap else "CAST(NULL AS STRING)"
@@ -1156,7 +1220,7 @@ def build_runtime_flow(ctx: dict[str, Any], days: int = 7) -> dict[str, Any]:
         sql_r = (
             f"SELECT CAST({dest_e} AS STRING), CAST({url_e} AS STRING), CAST({api_e} AS STRING), "
             f"COUNT(*) AS c FROM {tbl} "
-            f"WHERE `{tc}` >= current_timestamp() - INTERVAL {window} DAYS "
+            f"WHERE `{tc}` >= current_timestamp() - INTERVAL {window} DAYS{tx} "
             f"GROUP BY 1, 2, 3 ORDER BY c DESC NULLS LAST LIMIT 30"
         )
         with sql_connection() as conn:
@@ -1181,7 +1245,7 @@ def build_runtime_flow(ctx: dict[str, Any], days: int = 7) -> dict[str, Any]:
                 sql_m = (
                     f"SELECT get_json_object(CAST(`{cmap['response']}` AS STRING), '$.model') AS m, "
                     f"COUNT(*) AS c FROM {tbl} "
-                    f"WHERE `{tc}` >= current_timestamp() - INTERVAL {window} DAYS "
+                    f"WHERE `{tc}` >= current_timestamp() - INTERVAL {window} DAYS{tx} "
                     f"AND `{cmap['response']}` IS NOT NULL "
                     f"GROUP BY 1 ORDER BY c DESC NULLS LAST LIMIT 15"
                 )
@@ -1238,6 +1302,7 @@ def health_timeseries(
         extra = _ctx_source_predicate_multi(ctx, source_tables)
     else:
         extra = _ctx_source_predicate(ctx, source_table)
+    extra = extra + _ctx_test_excl(ctx)
     err_case = "0"
     if sc:
         err_case = (
@@ -1308,6 +1373,7 @@ def health_slo_summary(
         extra = _ctx_source_predicate_multi(ctx, source_tables)
     else:
         extra = _ctx_source_predicate(ctx, source_table)
+    extra = extra + _ctx_test_excl(ctx)
     if lc and sc:
         gsql = (
             f"SELECT approx_percentile(`{lc}`, 0.95) AS p95, "
@@ -1345,6 +1411,121 @@ def health_slo_summary(
     return out
 
 
+def _cost_by_request_breakdown(
+    ctx: dict[str, Any],
+    request_ids: list[str],
+    hours: int,
+    pred_base: str,
+    tok_sql: str,
+    cmap: dict[str, str],
+    *,
+    scoped_list_usd: float | None,
+) -> list[dict[str, Any]]:
+    """Per-request gateway tokens + inference proxy + prorated list USD."""
+    if not request_ids:
+        return []
+    tbl = ctx["table_sql"]
+    tc = ctx["time_col"]
+    rq_col = cmap.get("request_id")
+    inf_by_rid: dict[str, tuple[float, int]] = {}
+    if rq_col and tok_sql != "CAST(0.0 AS DOUBLE)":
+        in_list = ",".join("'" + r.replace("'", "''") + "'" for r in request_ids)
+        sql = (
+            f"SELECT CAST(`{rq_col}` AS STRING) AS rid, COUNT(*) AS c, SUM({tok_sql}) AS est "
+            f"FROM {tbl} WHERE `{tc}` >= current_timestamp() - INTERVAL {int(hours)} HOURS "
+            f"{pred_base} AND CAST(`{rq_col}` AS STRING) IN ({in_list}) "
+            f"GROUP BY 1"
+        )
+        try:
+            with sql_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(sql)
+                for row in cur.fetchall() or []:
+                    if row and row[0]:
+                        inf_by_rid[str(row[0])] = (float(row[2] or 0), int(row[1] or 0))
+        except Exception:  # noqa: BLE001
+            pass
+
+    gw_map, _ = _fetch_ai_gateway_usage_batch(request_ids, limit=len(request_ids))
+    sum_gw_tok = 0
+    for rid in request_ids:
+        u = gw_map.get(rid)
+        if u and u.get("total_tokens") is not None:
+            try:
+                sum_gw_tok += int(u["total_tokens"])
+            except (TypeError, ValueError):
+                pass
+
+    rows_out: list[dict[str, Any]] = []
+    for rid in request_ids:
+        u = gw_map.get(rid) or {}
+        est_inf, req_c = inf_by_rid.get(rid, (0.0, 0))
+        tt = u.get("total_tokens")
+        try:
+            tt_i = int(tt) if tt is not None else None
+        except (TypeError, ValueError):
+            tt_i = None
+        est_usd = None
+        if scoped_list_usd is not None and sum_gw_tok > 0 and tt_i is not None:
+            est_usd = round(float(scoped_list_usd) * (tt_i / float(sum_gw_tok)), 6)
+        rows_out.append(
+            {
+                "request_id": rid,
+                "gateway_input_tokens": u.get("input_tokens"),
+                "gateway_output_tokens": u.get("output_tokens"),
+                "gateway_total_tokens": tt_i,
+                "est_payload_tokens": round(est_inf, 1),
+                "inference_requests": req_c,
+                "est_list_usd_prorated": est_usd,
+                "destination_model": u.get("destination_model") or u.get("destination_name"),
+            }
+        )
+    return rows_out
+
+
+def _sync_gateway_totals_from_by_request(
+    ag: dict[str, Any],
+    by_request: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """If rollup missed tokens but per-request rows have gateway data, fill summary cards."""
+    if ag.get("error") or not by_request:
+        return ag
+    if int(ag.get("total_tokens") or 0) > 0:
+        return ag
+    sum_tok = 0
+    sum_in = 0
+    sum_out = 0
+    n = 0
+    for row in by_request:
+        tt = row.get("gateway_total_tokens")
+        if tt is None:
+            continue
+        try:
+            tti = int(tt)
+        except (TypeError, ValueError):
+            continue
+        if tti <= 0:
+            continue
+        sum_tok += tti
+        n += 1
+        try:
+            sum_in += int(row.get("gateway_input_tokens") or 0)
+            sum_out += int(row.get("gateway_output_tokens") or 0)
+        except (TypeError, ValueError):
+            pass
+    if sum_tok <= 0:
+        return ag
+    merged = dict(ag)
+    merged["total_tokens"] = sum_tok
+    merged["total_input_tokens"] = sum_in
+    merged["total_output_tokens"] = sum_out
+    merged["total_requests"] = n
+    note = (merged.get("note") or "").strip()
+    extra = "Summary totals from per-request gateway rows."
+    merged["note"] = f"{note} {extra}".strip() if note else extra
+    return merged
+
+
 def cost_summary(
     hours: int = 168,
     source_table: str | None = None,
@@ -1353,6 +1534,7 @@ def cost_summary(
     source_tables: list[str] | None = None,
     gateway_models: list[str] | None = None,
     request_id: str | None = None,
+    request_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Payload token proxy; AI Gateway tokens; billing list-price USD for model serving."""
     st_eff: list[str] | None = None
@@ -1366,12 +1548,17 @@ def cost_summary(
         if not gw_eff:
             gw_eff = None
 
-    rid = (request_id or "").strip() or None
+    rid_list = _normalize_request_ids(request_id=request_id, request_ids=request_ids)
+    rid = rid_list[0] if len(rid_list) == 1 else None
     ctx, err = _inference_table_ctx()
     derived_gateway_destination_ids: list[str] | None = None
 
-    if rid:
-        ag = ai_gateway_usage_rollup(hours, request_id=rid)
+    if rid_list:
+        ag = ai_gateway_usage_rollup(
+            hours,
+            request_id=rid if len(rid_list) == 1 else None,
+            request_ids=rid_list if len(rid_list) > 1 else None,
+        )
     elif gw_eff:
         ag = ai_gateway_usage_rollup(hours, gateway_models=gw_eff)
     elif gateway_model and str(gateway_model).strip():
@@ -1393,11 +1580,16 @@ def cost_summary(
     else:
         ag = ai_gateway_usage_rollup(hours)
 
-    has_focus = bool(rid or st_eff or gw_eff or (source_table and str(source_table).strip()))
+    has_focus = bool(rid_list or st_eff or gw_eff or (source_table and str(source_table).strip()))
     billing_terms_param: list[str] | None = None
     if has_focus:
-        if rid:
-            billing_terms_param = _resolve_billing_terms_for_pinned_request(ctx if (ctx and not err) else None, rid)
+        if rid_list:
+            terms_acc: list[str] = []
+            for r in rid_list:
+                terms_acc.extend(
+                    _resolve_billing_terms_for_pinned_request(ctx if (ctx and not err) else None, r)
+                )
+            billing_terms_param = _collect_billing_endpoint_match_terms(*terms_acc) if terms_acc else []
         else:
             bm = (ag or {}).get("by_model") or []
             labs = [str(x.get("model") or "") for x in bm if x.get("model")]
@@ -1417,6 +1609,7 @@ def cost_summary(
         "total_est_tokens": None,
         "by_destination": [],
         "hourly": [],
+        "by_request": [],
         "error": err,
         "ai_gateway": ag,
         "billing": bill,
@@ -1427,6 +1620,7 @@ def cost_summary(
             "source_tables": st_eff,
             "gateway_models": gw_eff,
             "request_id": rid,
+            "request_ids": rid_list if len(rid_list) > 1 else None,
             "gateway_destination_ids_derived": derived_gateway_destination_ids,
             "billing_endpoint_terms": billing_terms_param if has_focus else None,
             "resolved_fqn": resolve_source_table_fqn(source_table) if source_table else None,
@@ -1452,7 +1646,7 @@ def cost_summary(
         pred_base = _ctx_source_predicate_multi(ctx, st_eff)
     else:
         pred_base = _ctx_source_predicate(ctx, source_table)
-    pred = pred_base + _inference_request_id_predicate(cmap, rid)
+    pred = pred_base + _ctx_test_excl(ctx) + _inference_request_ids_predicate(cmap, rid_list)
     if "_agentops_source_table" in cols_l:
         group_dc = "`_agentops_source_table`"
     elif ctx.get("dest_col"):
@@ -1534,10 +1728,44 @@ def cost_summary(
             + " Payload charts = inference proxy (char/4 or log token columns), not AI Gateway metering — totals can "
             "differ from Gateway tokens. List price uses billing.usage when scope is active."
         ).strip()
+    if rid_list and ctx and not err:
+        scoped_usd = bill.get("total_list_usd") if bill and not bill.get("error") else None
+        out["by_request"] = _cost_by_request_breakdown(
+            ctx,
+            rid_list,
+            hours,
+            pred_base,
+            tok,
+            cmap,
+            scoped_list_usd=float(scoped_usd) if scoped_usd is not None else None,
+        )
+        out["ai_gateway"] = _sync_gateway_totals_from_by_request(ag, out["by_request"])
+        ag = out["ai_gateway"]
+    if rid_list and not (err and not ctx):
+        out["note"] = (
+            (out.get("note") or "")
+            + " Pinned task: gateway tokens are for that request_id (not limited by the Cost time-range dropdown)."
+        ).strip()
     if not ag.get("error") and (ag.get("total_tokens") or 0) > 0:
         out["token_primary_source"] = "ai_gateway"
     elif out.get("total_est_tokens"):
         out["token_primary_source"] = "payload_proxy"
+    try:
+        from app.services.compare_run import cost_estimate_meta
+
+        est_meta = cost_estimate_meta()
+        per_1m = est_meta.get("usd_per_1m_tokens")
+        tt = int((out.get("ai_gateway") or {}).get("total_tokens") or 0)
+        est_usd = (
+            round(tt * float(per_1m) / 1_000_000.0, 6) if per_1m is not None and tt > 0 else None
+        )
+        out["token_cost_estimate"] = {
+            "usd_per_1m_tokens": per_1m,
+            "estimated_usd": est_usd,
+            "note": est_meta.get("note"),
+        }
+    except Exception:  # noqa: BLE001
+        out["token_cost_estimate"] = None
     return out
 
 
@@ -1645,9 +1873,10 @@ def list_traces(
         else:
             parts.append(f"CAST(NULL AS DOUBLE) AS {opt}")
 
+    test_excl = ctx.get("test_excl") or ""
     sql = (
         f"SELECT {', '.join(parts)} FROM {tbl} "
-        f"WHERE 1=1 {pred_st} {gm_extra} ORDER BY `{tc}` DESC NULLS LAST LIMIT {lim}"
+        f"WHERE 1=1 {pred_st} {gm_extra}{test_excl} ORDER BY `{tc}` DESC NULLS LAST LIMIT {lim}"
     )
     try:
         with sql_connection() as conn:
@@ -1821,12 +2050,17 @@ def trace_detail(request_id: str) -> dict[str, Any]:
         comparison_group_id = str(raw_cg).strip() if raw_cg is not None and str(raw_cg).strip() else None
         lineage_graph = _build_request_lineage_graph(serializable, parsed_resp, gw, reasoning)
 
+        response_for_ui: Any = parsed_resp
+        if response_for_ui is None and resp_s:
+            response_for_ui = {"_note": "Response is stored as text (not valid JSON object).", "_raw": resp_s[:12000]}
+
         return {
             "request_id": rid,
             "comparison_group_id": comparison_group_id,
             "record": serializable,
-            "request_json": parsed_req,
-            "response_json": parsed_resp,
+            "request_json": parsed_req if parsed_req is not None else (req_s[:8000] if req_s else None),
+            "response_json": response_for_ui,
+            "response_raw": resp_s[:12000] if resp_s else None,
             "reasoning_summary": reasoning,
             "internal_lineage": internal_lineage,
             "lineage_graph": lineage_graph,
@@ -1837,10 +2071,171 @@ def trace_detail(request_id: str) -> dict[str, Any]:
         return {"error": str(e).strip()[:500], "request_id": rid}
 
 
+def _per_table_request_counts(ctx: dict[str, Any], days: int = 7) -> dict[str, int]:
+    """Request counts per payload table (multi-table union only)."""
+    fqns = list(ctx.get("fqns") or [])
+    if len(fqns) <= 1:
+        return {}
+    tbl = ctx["table_sql"]
+    tc = ctx["time_col"]
+    window = max(1, min(90, int(days)))
+    out: dict[str, int] = {}
+    try:
+        sql = (
+            f"SELECT LOWER(TRIM(CAST(`_agentops_source_table` AS STRING))), COUNT(*) "
+            f"FROM {tbl} WHERE `{tc}` >= current_timestamp() - INTERVAL {window} DAYS "
+            "GROUP BY 1"
+        )
+        with sql_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(sql)
+            for row in cur.fetchall() or []:
+                if row[0]:
+                    out[str(row[0]).lower()] = int(row[1] or 0)
+    except Exception:
+        return {}
+    return out
+
+
+def _build_telemetry_hierarchy_graph(
+    fqns: list[str],
+    runtime: dict[str, Any],
+    uc_edges: list[dict[str, Any]],
+    *,
+    table_counts: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Hub-and-spoke graph: AI Gateway → schema → payload tables (+ optional UC upstream/downstream)."""
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, str]] = []
+    table_counts = table_counts or {}
+    hub_set = {f.lower() for f in fqns}
+
+    routes = runtime.get("routes") or []
+    gw_url: str | None = None
+    for r in routes:
+        u = r.get("url")
+        if isinstance(u, str) and u.strip():
+            gw_url = u.strip()
+            if "ai-gateway" in gw_url.lower():
+                break
+    if not gw_url and routes:
+        u0 = routes[0].get("url")
+        gw_url = str(u0).strip() if u0 else None
+
+    gw_id = "layer:gateway"
+    nodes.append(
+        {
+            "id": gw_id,
+            "kind": "gateway",
+            "label": "Databricks AI Gateway",
+            "detail": gw_url or "chat/completions (from logs)",
+            "meta": f"{int(runtime.get('total_requests') or 0)} requests ({runtime.get('window_days', 7)}d)",
+        },
+    )
+
+    route_node_ids: list[str] = []
+    for i, r in enumerate(routes[:12]):
+        dest = r.get("destination_id") or r.get("api_type") or f"route-{i}"
+        rid = f"route:{dest}"
+        if any(n["id"] == rid for n in nodes):
+            continue
+        route_node_ids.append(rid)
+        nodes.append(
+            {
+                "id": rid,
+                "kind": "route",
+                "label": str(dest),
+                "detail": (r.get("url") or gw_url or "")[:200] or None,
+                "meta": f"{int(r.get('requests') or 0)} reqs",
+            },
+        )
+        edges.append({"from": gw_id, "to": rid})
+
+    schema_label = fqns[0].rsplit(".", 1)[0] if fqns else "inference logs"
+    hub_id = "layer:schema"
+    nodes.append(
+        {
+            "id": hub_id,
+            "kind": "schema",
+            "label": schema_label,
+            "detail": "Unity Catalog schema for AgentOps payload tables",
+            "meta": f"{len(fqns)} payload table(s)",
+        },
+    )
+    edges.append({"from": gw_id, "to": hub_id})
+    if len(route_node_ids) == 1:
+        edges.append({"from": route_node_ids[0], "to": hub_id})
+
+    def _table_slug(fqn: str) -> str:
+        return fqn.split(".")[-1].lower().replace("_payload", "")
+
+    for fqn in sorted(fqns):
+        tid = f"table:{fqn}"
+        short = fqn.split(".")[-1]
+        cnt = table_counts.get(fqn.lower())
+        meta = f"{cnt} reqs (7d)" if cnt is not None else None
+        nodes.append(
+            {
+                "id": tid,
+                "kind": "table",
+                "label": short,
+                "detail": fqn,
+                "meta": meta,
+            },
+        )
+        edges.append({"from": hub_id, "to": tid})
+        slug = _table_slug(fqn)
+        for rid in route_node_ids:
+            rlabel = rid.split(":", 1)[-1].lower()
+            if slug and (slug in rlabel or rlabel in slug):
+                edges.append({"from": rid, "to": tid})
+        if not route_node_ids:
+            edges.append({"from": gw_id, "to": tid})
+
+    seen_uc: set[str] = set()
+    for e in uc_edges:
+        src = str(e.get("source") or "").strip()
+        tgt = str(e.get("target") or "").strip()
+        if not src or not tgt:
+            continue
+        sl, tl = src.lower(), tgt.lower()
+        if tl in hub_set and sl not in hub_set:
+            uid = f"uc-up:{sl}"
+            if uid not in seen_uc:
+                seen_uc.add(uid)
+                nodes.append(
+                    {
+                        "id": uid,
+                        "kind": "uc_upstream",
+                        "label": src.split(".")[-1],
+                        "detail": src,
+                        "meta": e.get("entity_type"),
+                    },
+                )
+            edges.append({"from": uid, "to": f"table:{tgt}"})
+        if sl in hub_set and tl not in hub_set:
+            did = f"uc-down:{tl}"
+            if did not in seen_uc:
+                seen_uc.add(did)
+                nodes.append(
+                    {
+                        "id": did,
+                        "kind": "uc_downstream",
+                        "label": tgt.split(".")[-1],
+                        "detail": tgt,
+                        "meta": e.get("entity_type"),
+                    },
+                )
+            edges.append({"from": f"table:{src}", "to": did})
+
+    return {"nodes": nodes, "edges": edges}
+
+
 def governance_lineage(limit: int = 80) -> dict[str, Any]:
     """UC system table lineage when enabled; graph-friendly edges."""
     ctx, err = _inference_table_ctx()
     runtime = build_runtime_flow(ctx, days=7) if ctx else {"error": err, "routes": [], "models": []}
+    table_counts = _per_table_request_counts(ctx, days=7) if ctx else {}
     out: dict[str, Any] = {
         "inference_table": None,
         "edges": [],
@@ -1856,6 +2251,8 @@ def governance_lineage(limit: int = 80) -> dict[str, Any]:
         "uc_lineage_query_error": None,
     }
     if err or not ctx:
+        out["telemetry_hierarchy"] = _build_telemetry_hierarchy_graph([], runtime, [])
+        out["has_uc_lineage"] = False
         return out
     fqns: list[str] = list(ctx.get("fqns") or [ctx["fqn"]])
     out["inference_table_fqns"] = fqns
@@ -1956,6 +2353,22 @@ def governance_lineage(limit: int = 80) -> dict[str, Any]:
             )
         except Exception as e:  # noqa: BLE001
             out["workspace_lineage_recent_error"] = str(e).strip()[:500]
+
+    out["telemetry_hierarchy"] = _build_telemetry_hierarchy_graph(
+        fqns,
+        runtime,
+        out.get("edges") or [],
+        table_counts=table_counts,
+    )
+    out["has_uc_lineage"] = bool(
+        out.get("edges")
+        and any(
+            (e.get("source") or "").lower() not in {f.lower() for f in fqns}
+            or (e.get("target") or "").lower() not in {f.lower() for f in fqns}
+            for e in out.get("edges") or []
+            if isinstance(e, dict)
+        )
+    )
     return out
 
 
