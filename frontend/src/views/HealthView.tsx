@@ -156,29 +156,32 @@ export function HealthView() {
       ) : null}
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <Card title="SLO monitor">
+        <Card
+          title="SLO monitor"
+          subtitle="24h: p95 target 2000 ms · error budget 1% per model/route"
+        >
           {slo ? (
             <ul className="space-y-3 text-sm text-[var(--color-muted)]">
               <li className="flex items-center justify-between gap-3">
-                <span>Global p95 latency</span>
+                <span title="95th percentile response time across requests">Global p95 latency</span>
                 <span className="tabular-nums font-medium text-[var(--color-fg)]">
                   {slo.global_p95_ms != null ? `${Math.round(slo.global_p95_ms).toLocaleString()} ms` : '—'}
                 </span>
               </li>
               <li className="flex items-center justify-between gap-3">
-                <span>Global error rate</span>
+                <span title="Share of requests with HTTP ≥400">Global error rate</span>
                 <span className="tabular-nums font-medium text-[var(--color-fg)]">
                   {slo.global_error_rate_pct != null ? `${slo.global_error_rate_pct.toFixed(2)}%` : '—'}
                 </span>
               </li>
               <li className="flex items-center justify-between gap-3">
-                <span>Segments breaching p95</span>
+                <span title="Models/routes slower than p95 target">Segments breaching p95</span>
                 <Badge tone={slo.agents_breaching_p95 > 0 ? 'warn' : 'teal'}>
                   {slo.agents_breaching_p95.toString()}
                 </Badge>
               </li>
               <li className="flex items-center justify-between gap-3">
-                <span>Segments over error budget</span>
+                <span title="Models/routes above 1% errors">Segments over error budget</span>
                 <Badge tone={slo.agents_over_error_budget > 0 ? 'warn' : 'teal'}>
                   {slo.agents_over_error_budget.toString()}
                 </Badge>
@@ -187,6 +190,9 @@ export function HealthView() {
           ) : (
             <p className="text-sm text-[var(--color-muted)]">No SLO data.</p>
           )}
+          {slo?.note ? (
+            <p className="mt-3 text-[11px] text-[var(--color-muted)]">{String(slo.note)}</p>
+          ) : null}
         </Card>
 
         <Card title="Request volume" className="lg:col-span-2">

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Card } from '@/components/ui/Card'
+import { DataLoadingState } from '@/components/ui/DataLoadingState'
 import { Badge } from '@/components/ui/Badge'
 import { useWorkspaceSelection } from '@/context/WorkspaceSelectionContext'
 import type { AgentCatalogEntry, AgentSummary, OverviewResponse } from '@/lib/api'
@@ -104,17 +105,9 @@ export function OverviewView() {
 
   if (loading) {
     return (
-      <div className="p-6">
-        <div className="h-6 max-w-sm animate-pulse rounded bg-[var(--color-surface-elevated)]" />
-        <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {[1, 2, 3, 4].map((i) => (
-            <div
-              key={i}
-              className="h-28 animate-pulse rounded-xl bg-[var(--color-surface)]/80"
-            />
-          ))}
-        </div>
-      </div>
+      <DataLoadingState loading label="Loading overview…" minHeight="20rem">
+        <div className="p-6" />
+      </DataLoadingState>
     )
   }
 
@@ -165,20 +158,21 @@ export function OverviewView() {
             value: formatNumber(overview.gateway_tokens_window),
           },
         ]
-      : []),
-    ...(overview.gateway_tokens_24h != null
+      : overview.gateway_tokens_7d != null
+        ? [
+            {
+              label: 'Gateway tokens (7d)',
+              value: formatNumber(overview.gateway_tokens_7d),
+            },
+          ]
+        : []),
+    ...(overview.gateway_tokens_24h != null &&
+    (overview.window_hours ?? hours) !== 24 &&
+    overview.gateway_tokens_window == null
       ? [
           {
             label: 'Gateway tokens (24h)',
             value: formatNumber(overview.gateway_tokens_24h),
-          },
-        ]
-      : []),
-    ...(overview.gateway_tokens_7d != null
-      ? [
-          {
-            label: 'Gateway tokens (7d)',
-            value: formatNumber(overview.gateway_tokens_7d),
           },
         ]
       : []),
@@ -193,7 +187,7 @@ export function OverviewView() {
           ? `${(overview.quality_score_avg * 100).toFixed(0)}%`
           : '—',
       hint:
-        'Composite from latency, 24h errors, and reasoning-shaped responses — a health proxy, not human preference.',
+        '0–100% score: 55% low error rate + 25% low p95 latency + 20% responses with reasoning (gateway-only when payload tables unavailable).',
     },
   ]
 

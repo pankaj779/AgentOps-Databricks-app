@@ -249,7 +249,24 @@ def agents() -> list[AgentSummary]:
         ]
 
     if dto.data_mode == "live_partial":
-        hint = (dto.inference_setup_hint or "Open GET /api/v1/inference/diagnostics")[:200]
+        from app.services.analytics import gateway_agent_rollups
+
+        gw_rollups = gateway_agent_rollups(limit=15)
+        if gw_rollups:
+            return [
+                AgentSummary(
+                    id=r["id"],
+                    name=f"{r['name']} (AI Gateway)",
+                    status="healthy" if float(r.get("error_rate_pct") or 0) < 2.0 else "degraded",
+                    rpm=float(r["rpm"]),
+                    p95_latency_ms=float(r.get("p95_latency_ms") or 0),
+                    error_rate_pct=float(r.get("error_rate_pct") or 0),
+                    source="ai_gateway",
+                    agent_key=f"gw:{r['id']}",
+                )
+                for r in gw_rollups
+            ]
+        hint = (dto.inference_setup_hint or "Payload tables unavailable — using AI Gateway only.")[:200]
         return [
             AgentSummary(
                 id="inference-wiring",
@@ -352,11 +369,15 @@ def analytics_health_timeseries(
 ) -> dict[str, Any]:
     if not get_settings().databricks_token:
         return {"error": "DATABRICKS_TOKEN not configured", "buckets": []}
-    infer, _gw = _scope_from_request(agent, agents, source_table, gateway_model)
+    infer, gw = _scope_from_request(agent, agents, source_table, gateway_model)
     if len(infer) > 1:
-        return health_timeseries(hours=hours, source_tables=infer)
+        return health_timeseries(hours=hours, source_tables=infer, gateway_models=gw or None)
     st_single = infer[0] if len(infer) == 1 else None
-    return health_timeseries(hours=hours, source_table=st_single)
+    return health_timeseries(
+        hours=hours,
+        source_table=st_single,
+        gateway_models=gw or None,
+    )
 
 
 @router.get("/analytics/health/slo")
@@ -370,18 +391,20 @@ def analytics_health_slo(
 ) -> dict[str, Any]:
     if not get_settings().databricks_token:
         return {"error": "DATABRICKS_TOKEN not configured"}
-    infer, _gw = _scope_from_request(agent, agents, source_table, gateway_model)
+    infer, gw = _scope_from_request(agent, agents, source_table, gateway_model)
     if len(infer) > 1:
         return health_slo_summary(
             p95_target_ms=p95_target_ms,
             error_budget_pct=error_budget_pct,
             source_tables=infer,
+            gateway_models=gw or None,
         )
     st_single = infer[0] if len(infer) == 1 else None
     return health_slo_summary(
         p95_target_ms=p95_target_ms,
         error_budget_pct=error_budget_pct,
         source_table=st_single,
+        gateway_models=gw or None,
     )
 
 

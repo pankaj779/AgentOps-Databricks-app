@@ -108,6 +108,8 @@ export type HealthSloResponse = {
   agents_over_error_budget: number
   rollups: SloRollup[]
   error: string | null
+  source?: string | null
+  note?: string | null
 }
 
 export type CostByDest = {

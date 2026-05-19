@@ -8,7 +8,12 @@ from datetime import UTC, datetime
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
-from app.services.analytics import ai_gateway_token_snapshots, ai_gateway_usage_rollup, quality_observability
+from app.services.analytics import (
+    ai_gateway_token_snapshots,
+    ai_gateway_usage_rollup,
+    quality_observability,
+    quality_score_from_observability,
+)
 from app.services.databricks_status import sql_probe
 from app.services.inference import (
     count_since_hours,
@@ -175,13 +180,7 @@ def build_overview(*, window_hours: int = 168) -> OverviewDTO:
         if n_agents == 0:
             n_agents = max(1, min(99, req24 // 500 + 1))
 
-        q_score: float | None = None
-        if not qo.get("error") and qo.get("p95_latency_ms") is not None:
-            er = min(1.0, max(0.0, float(qo.get("error_rate_pct") or 0) / 100.0))
-            p95 = float(qo.get("p95_latency_ms") or 0)
-            lat_n = min(1.0, max(0.0, p95 / 25_000.0))
-            rs = min(1.0, max(0.0, float(qo.get("responses_with_reasoning_pct") or 0) / 100.0))
-            q_score = max(0.0, min(1.0, (1.0 - er) * 0.55 + (1.0 - lat_n) * 0.25 + rs * 0.2))
+        q_score = quality_score_from_observability(qo)
 
         return OverviewDTO(
             generated_at=datetime.now(tz=UTC),
@@ -204,22 +203,38 @@ def build_overview(*, window_hours: int = 168) -> OverviewDTO:
             gateway_tokens_window=gw_tokens_window,
         )
 
-    # SQL works; inference missing or misconfigured
+    # SQL works; inference payload tables missing or unreadable — still surface AI Gateway when available.
+    snap = ai_gateway_token_snapshots()
+    gw_rollup = ai_gateway_usage_rollup(24)
+    gw_window = ai_gateway_usage_rollup(wh)
+    gw_req = int(gw_rollup.get("total_requests") or 0) if not gw_rollup.get("error") else 0
+    gw_models = (gw_rollup.get("by_model") or []) if not gw_rollup.get("error") else []
+    n_discovered = int(inf.get("tables_discovered_count") or 0) or discovered_payload_table_count()
+    fqns_partial, _ = inference_fqn_list()
+    n_agents = max(n_discovered, len(fqns_partial), len(gw_models), 0)
+    qo = quality_observability()
+    q_score = quality_score_from_observability(qo)
+    gw_err_pct = float(qo.get("error_rate_pct") or 0) if not qo.get("error") else 0.0
     return OverviewDTO(
         generated_at=datetime.now(tz=UTC),
         environment=env,
         data_mode="live_partial",
-        agents_monitored=0,
-        requests_24h=0,
-        requests_24h_source="none",
-        error_rate_pct=0.0,
+        agents_monitored=n_agents,
+        requests_24h=gw_req,
+        requests_24h_source="ai_gateway" if gw_req > 0 else "none",
+        error_rate_pct=round(gw_err_pct, 3),
         est_monthly_cost_usd=None,
-        quality_score_avg=None,
+        quality_score_avg=q_score,
         databricks_sql_reachable=True,
         inference_setup_hint=hint
         or "Set AGENTOPS_INFERENCE_SCHEMA, AGENTOPS_INFERENCE_TABLE, or AGENTOPS_INFERENCE_TABLES and restart API. Open /api/v1/inference/diagnostics for details.",
         count_7d=None,
-        gateway_tokens_24h=None,
-        gateway_tokens_7d=None,
-        gateway_usage_error=None,
+        gateway_tokens_24h=snap.get("total_tokens_24h") if not snap.get("error") else None,
+        gateway_tokens_7d=snap.get("total_tokens_7d") if not snap.get("error") else None,
+        gateway_usage_error=snap.get("error") or gw_rollup.get("error"),
+        window_hours=wh,
+        count_window=None,
+        gateway_tokens_window=(
+            int(gw_window.get("total_tokens") or 0) if not gw_window.get("error") else None
+        ),
     )

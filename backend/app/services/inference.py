@@ -176,11 +176,22 @@ def discover_inference_table_fqns() -> tuple[list[str], str | None]:
         if validate_fqn(fqn):
             fqns.append(fqn)
     fqns.sort()
+    candidates = list(fqns)
     fqns, skipped = _filter_reachable_fqns(fqns)
     warn = None if fqns else "No tables found matching suffix; check AGENTOPS_INFERENCE_TABLE_SUFFIX or schema name."
     if skipped:
         note = f"Skipped {len(skipped)} unreachable table(s): {', '.join(skipped[:3])}"
+        if len(skipped) > 3:
+            note += f" (+{len(skipped) - 3} more)"
         warn = f"{warn} {note}".strip() if warn else note
+    # Keep discovered names for catalog/UI when every probe failed (e.g. UC storage credential).
+    if not fqns and candidates:
+        fqns = candidates
+        cred_hint = (
+            " Tables exist in the catalog but SELECT failed — often a Unity Catalog storage "
+            "credential / IAM role issue. AI Gateway metrics may still work."
+        )
+        warn = f"{warn}{cred_hint}".strip() if warn else cred_hint.strip()
     _SCHEMA_DISCOVER_CACHE[cache_key] = (now, fqns, warn)
     return fqns, warn
 
@@ -483,6 +494,11 @@ def inference_agent_rollups(limit: int = 15) -> list[dict[str, Any]]:
 
     cols, derr = describe_columns(describe_sql)
     if derr or not cols:
+        from app.services.analytics import gateway_agent_rollups
+
+        gw_rows = gateway_agent_rollups(limit=limit)
+        if gw_rows:
+            return gw_rows
         return _stub_rollups_per_table(fqns, "_agentops_source_table") if len(fqns) > 1 else []
 
     time_col = resolve_time_column(cols, s.inference_time_column)

@@ -794,6 +794,150 @@ def _gateway_models_sql_fragment(gateway_models: list[str] | None) -> str:
     return " AND (" + " OR ".join(f"({p})" for p in parts) + ") "
 
 
+def _gateway_model_label_sql() -> str:
+    return (
+        "COALESCE(NULLIF(TRIM(CAST(destination_model AS STRING)), ''), "
+        "NULLIF(TRIM(CAST(destination_name AS STRING)), ''), "
+        "CAST(destination_id AS STRING), 'unknown')"
+    )
+
+
+def _gateway_usage_where_clause(hours: int, gateway_models: list[str] | None = None) -> str:
+    h = max(1, min(24 * 90, int(hours)))
+    w = _ai_gateway_workspace_sql()
+    gm = _gateway_models_sql_fragment(gateway_models) if gateway_models else ""
+    from app.services.compare_run import gateway_exclude_test_request_ids_clause
+
+    excl = gateway_exclude_test_request_ids_clause(h)
+    return (
+        f"WHERE event_time >= current_timestamp() - INTERVAL {h} HOURS"
+        f"{w}{gm}{excl}"
+    )
+
+
+def gateway_agent_rollups(
+    limit: int = 50,
+    hours: int = 24,
+    gateway_models: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Per-model RPM / p95 / error rate from system.ai_gateway.usage."""
+    lim = max(1, min(100, int(limit)))
+    where = _gateway_usage_where_clause(hours, gateway_models)
+    m_expr = _gateway_model_label_sql()
+    sql = (
+        f"SELECT {m_expr} AS m, COUNT(*) AS cnt, "
+        f"approx_percentile(latency_ms, 0.95) AS p95, "
+        "AVG(CASE WHEN CAST(status_code AS DOUBLE) >= 400 "
+        "OR CAST(status_code AS DOUBLE) < 100 THEN 1.0 ELSE 0.0 END) AS err_frac "
+        f"FROM system.ai_gateway.usage {where} "
+        f"GROUP BY 1 ORDER BY cnt DESC NULLS LAST LIMIT {lim}"
+    )
+    try:
+        with sql_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(sql)
+            rows = cur.fetchall() or []
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if not r or r[0] is None:
+            continue
+        k = str(r[0])
+        cnt = int(r[1] or 0)
+        out.append(
+            {
+                "id": k[:128],
+                "name": k[:128] or "unknown",
+                "requests_24h": cnt,
+                "rpm": cnt / (24.0 * 60.0) if hours >= 24 else cnt / (max(1, hours) * 60.0),
+                "p95_latency_ms": float(r[2]) if r[2] is not None else 0.0,
+                "error_rate_pct": float(r[3]) * 100.0 if r[3] is not None else 0.0,
+                "group_column": "ai_gateway",
+            },
+        )
+    return out
+
+
+def build_runtime_flow_from_gateway(days: int = 7) -> dict[str, Any]:
+    """Runtime flow when inference payload tables are unavailable."""
+    hours_gw = max(1, min(90 * 24, int(days) * 24))
+    gw = ai_gateway_usage_rollup(hours_gw)
+    out: dict[str, Any] = {
+        "window_days": int(days),
+        "distinct_callers": None,
+        "total_requests": int(gw.get("total_requests") or 0) if not gw.get("error") else None,
+        "routes": [],
+        "models": [],
+        "error": gw.get("error"),
+        "note": "From system.ai_gateway.usage — inference payload tables unavailable.",
+    }
+    if gw.get("error"):
+        return out
+    for r in gw.get("by_model") or []:
+        m = str(r.get("model") or "unknown")
+        c = int(r.get("requests") or 0)
+        out["models"].append({"model": m, "requests": c})
+        out["routes"].append(
+            {
+                "destination_id": m,
+                "url": None,
+                "api_type": "ai_gateway.usage",
+                "requests": c,
+            },
+        )
+    return out
+
+
+def quality_score_from_observability(qo: dict[str, Any]) -> float | None:
+    """0–1 composite: low errors, low p95 latency, optional reasoning presence."""
+    if qo.get("error"):
+        return None
+    if qo.get("p95_latency_ms") is None and qo.get("error_rate_pct") is None:
+        return None
+    er = min(1.0, max(0.0, float(qo.get("error_rate_pct") or 0) / 100.0))
+    p95 = float(qo.get("p95_latency_ms") or 0)
+    lat_n = min(1.0, max(0.0, p95 / 25_000.0))
+    rs = min(1.0, max(0.0, float(qo.get("responses_with_reasoning_pct") or 0) / 100.0))
+    return max(0.0, min(1.0, (1.0 - er) * 0.55 + (1.0 - lat_n) * 0.25 + rs * 0.2))
+
+
+def quality_observability_from_gateway(hours: int = 24) -> dict[str, Any]:
+    where = _gateway_usage_where_clause(hours)
+    out: dict[str, Any] = {
+        "window_hours": int(hours),
+        "avg_latency_ms": None,
+        "p50_latency_ms": None,
+        "p95_latency_ms": None,
+        "error_rate_pct": None,
+        "requests_sampled_for_json": 0,
+        "responses_with_reasoning_pct": None,
+        "error": None,
+        "source": "ai_gateway",
+    }
+    sql = (
+        "SELECT AVG(latency_ms), approx_percentile(latency_ms, 0.5), "
+        "approx_percentile(latency_ms, 0.95), "
+        "AVG(CASE WHEN CAST(status_code AS DOUBLE) >= 400 "
+        "OR CAST(status_code AS DOUBLE) < 100 THEN 1.0 ELSE 0.0 END) "
+        f"FROM system.ai_gateway.usage {where}"
+    )
+    try:
+        with sql_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(sql)
+            row = cur.fetchone()
+        if row:
+            out["avg_latency_ms"] = float(row[0]) if row[0] is not None else None
+            out["p50_latency_ms"] = float(row[1]) if row[1] is not None else None
+            out["p95_latency_ms"] = float(row[2]) if row[2] is not None else None
+            out["error_rate_pct"] = float(row[3]) * 100.0 if row[3] is not None else 0.0
+        out["error"] = None
+    except Exception as e:  # noqa: BLE001
+        out["error"] = str(e).strip()[:500]
+    return out
+
+
 def ai_gateway_usage_rollup(
     hours: int,
     gateway_model: str | None = None,
@@ -1285,15 +1429,54 @@ def health_timeseries(
     source_table: str | None = None,
     *,
     source_tables: list[str] | None = None,
+    gateway_models: list[str] | None = None,
 ) -> dict[str, Any]:
     """Hourly request + error counts."""
     ctx, err = _inference_table_ctx()
+    h = int(hours)
     out: dict[str, Any] = {
-        "hours": int(hours),
+        "hours": h,
         "buckets": [],
         "error": err,
+        "source": "inference_table",
     }
+    gm = list(gateway_models) if gateway_models else None
     if err or not ctx:
+        where = _gateway_usage_where_clause(h, gm)
+        sql_gw = (
+            "SELECT date_trunc('HOUR', event_time) AS bucket, "
+            "COUNT(*) AS requests, "
+            "SUM(CASE WHEN CAST(status_code AS DOUBLE) >= 400 "
+            "OR CAST(status_code AS DOUBLE) < 100 THEN 1 ELSE 0 END) AS errors "
+            f"FROM system.ai_gateway.usage {where} GROUP BY 1 ORDER BY 1 ASC"
+        )
+        try:
+            with sql_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(sql_gw)
+                rows = cur.fetchall() or []
+            buckets: list[dict[str, Any]] = []
+            for r in rows:
+                if not r or r[0] is None:
+                    continue
+                b = r[0]
+                bt = b.isoformat() if hasattr(b, "isoformat") else str(b)
+                buckets.append(
+                    {
+                        "bucket": bt,
+                        "requests": int(r[1] or 0),
+                        "errors": int(r[2] or 0),
+                    },
+                )
+            if buckets:
+                out["buckets"] = buckets
+                out["error"] = None
+                out["source"] = "ai_gateway"
+                out["note"] = "Hourly buckets from AI Gateway (payload inference tables unavailable)."
+                return out
+        except Exception as e:  # noqa: BLE001
+            out["error"] = str(e).strip()[:500]
+            return out
         return out
     tc = ctx["time_col"]
     sc = ctx["status_col"]
@@ -1350,6 +1533,7 @@ def health_slo_summary(
     source_table: str | None = None,
     *,
     source_tables: list[str] | None = None,
+    gateway_models: list[str] | None = None,
 ) -> dict[str, Any]:
     """Global 24h SLO + per-segment rollups vs targets."""
     ctx, err = _inference_table_ctx()
@@ -1362,8 +1546,43 @@ def health_slo_summary(
         "agents_over_error_budget": 0,
         "rollups": [],
         "error": err,
+        "source": "inference_table",
     }
+    gm = list(gateway_models) if gateway_models else None
     if err or not ctx:
+        where = _gateway_usage_where_clause(24, gm)
+        sql_gw = (
+            "SELECT approx_percentile(latency_ms, 0.95) AS p95, "
+            "AVG(CASE WHEN CAST(status_code AS DOUBLE) >= 400 "
+            "OR CAST(status_code AS DOUBLE) < 100 THEN 1.0 ELSE 0.0 END) AS er "
+            f"FROM system.ai_gateway.usage {where}"
+        )
+        try:
+            with sql_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(sql_gw)
+                row = cur.fetchone()
+            if row:
+                out["global_p95_ms"] = float(row[0]) if row[0] is not None else None
+                out["global_error_rate_pct"] = (
+                    float(row[1]) * 100.0 if row[1] is not None else None
+                )
+            rollups = gateway_agent_rollups(limit=50, hours=24, gateway_models=gm)
+            out["rollups"] = rollups
+            out["agents_breaching_p95"] = sum(
+                1 for r in rollups if float(r.get("p95_latency_ms") or 0) > p95_target_ms
+            )
+            out["agents_over_error_budget"] = sum(
+                1 for r in rollups if float(r.get("error_rate_pct") or 0) > error_budget_pct
+            )
+            out["error"] = None
+            out["source"] = "ai_gateway"
+            out["note"] = (
+                "SLO from AI Gateway (24h). Payload inference tables unavailable — "
+                "fix Unity Catalog storage credential for full log drill-down."
+            )
+        except Exception as e:  # noqa: BLE001
+            out["error"] = str(e).strip()[:500]
         return out
     tbl = ctx["table_sql"]
     tc = ctx["time_col"]
@@ -2234,13 +2453,18 @@ def _build_telemetry_hierarchy_graph(
 def governance_lineage(limit: int = 80) -> dict[str, Any]:
     """UC system table lineage when enabled; graph-friendly edges."""
     ctx, err = _inference_table_ctx()
-    runtime = build_runtime_flow(ctx, days=7) if ctx else {"error": err, "routes": [], "models": []}
+    if ctx:
+        runtime = build_runtime_flow(ctx, days=7)
+    else:
+        runtime = build_runtime_flow_from_gateway(days=7)
+        if err:
+            runtime["payload_warning"] = str(err)[:300]
     table_counts = _per_table_request_counts(ctx, days=7) if ctx else {}
     out: dict[str, Any] = {
         "inference_table": None,
         "edges": [],
         "nodes": [],
-        "error": err,
+        "error": err if ctx else None,
         "runtime_flow": runtime,
         "hint": (
             "Unity Catalog table lineage comes from system.access.table_lineage (separate from AI Gateway HTTP logs). "
@@ -2251,8 +2475,18 @@ def governance_lineage(limit: int = 80) -> dict[str, Any]:
         "uc_lineage_query_error": None,
     }
     if err or not ctx:
-        out["telemetry_hierarchy"] = _build_telemetry_hierarchy_graph([], runtime, [])
+        from app.services.inference import inference_fqn_list
+
+        fqns_disc, _ = inference_fqn_list()
+        out["inference_table_fqns"] = fqns_disc
+        out["telemetry_hierarchy"] = _build_telemetry_hierarchy_graph(fqns_disc, runtime, [])
         out["has_uc_lineage"] = False
+        if err and not runtime.get("error"):
+            out["error"] = None
+            out["hint"] = (
+                (out.get("hint") or "")
+                + " Payload tables listed but not readable from SQL — graph uses AI Gateway traffic."
+            ).strip()
         return out
     fqns: list[str] = list(ctx.get("fqns") or [ctx["fqn"]])
     out["inference_table_fqns"] = fqns
@@ -2485,9 +2719,15 @@ def quality_observability() -> dict[str, Any]:
         "requests_sampled_for_json": 0,
         "responses_with_reasoning_pct": None,
         "error": err,
+        "source": "inference_table",
     }
     if err or not ctx:
-        return out
+        gw_out = quality_observability_from_gateway(24)
+        gw_out["note"] = (
+            "Quality score uses gateway latency & errors only (no response JSON / reasoning) "
+            "because payload tables are unavailable."
+        )
+        return gw_out
     tbl = ctx["table_sql"]
     tc = ctx["time_col"]
     lc = ctx["latency_col"]
