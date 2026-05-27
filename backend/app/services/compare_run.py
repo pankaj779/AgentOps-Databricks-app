@@ -41,7 +41,9 @@ def tracking_headers(track_in_dashboard: bool) -> dict[str, str]:
 
 def test_request_sql_exclude_fragment(cols: list[str]) -> str:
     """Exclude AgentOps replay/benchmark rows. Uses positive match only so NULL/empty request bodies stay visible."""
-    if not get_settings().exclude_test_requests_from_analytics:
+    from app.services.app_config_store import effective_exclude_test_requests
+
+    if not effective_exclude_test_requests():
         return ""
     cmap = {c.lower(): c for c in cols}
     rq = cmap.get("request")
@@ -61,7 +63,9 @@ def test_request_sql_exclude_fragment(cols: list[str]) -> str:
 
 def fetch_test_request_ids(hours: int = 168, *, limit: int = 2000) -> list[str]:
     """Gateway request_ids to drop from workspace rollups when excluding dashboard tests."""
-    if not get_settings().exclude_test_requests_from_analytics:
+    from app.services.app_config_store import effective_exclude_test_requests
+
+    if not effective_exclude_test_requests():
         return []
     from app.services.analytics import _inference_table_ctx  # noqa: PLC0415
 

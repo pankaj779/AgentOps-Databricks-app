@@ -10,6 +10,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.config import BACKEND_ROOT, get_settings
+from app.services.agent_unify import gateway_routes_from_inference_fqns
+from app.services.inference import inference_fqn_list
 from app.services.analytics import trace_detail
 from app.services.compare_run import (
     apply_tracking_stamps,
@@ -60,8 +62,42 @@ def _merge_auth_headers(headers: dict[str, str], *, track_in_dashboard: bool) ->
 def _payload_for_target(body: dict[str, Any], target: ReplayTargetSpec) -> dict[str, Any]:
     payload = json.loads(json.dumps(body))
     if target.model and str(target.model).strip():
-        payload["model"] = str(target.model).strip()
+        # Databricks AI Gateway route names must be lowercase (letters, digits, -, _).
+        payload["model"] = str(target.model).strip().lower()
     return payload
+
+
+def _default_gateway_chat_url() -> str:
+    host = (get_settings().databricks_host or "").strip().rstrip("/")
+    if not host:
+        return ""
+    if host.startswith("http://") or host.startswith("https://"):
+        base = host.rstrip("/")
+    else:
+        base = f"https://{host}"
+    return f"{base}/ai-gateway/mlflow/v1/chat/completions"
+
+
+def discover_gateway_replay_targets() -> list[ReplayTargetSpec]:
+    """Fallback targets from UC payload table names (same route strings as Serving UI)."""
+    url = _default_gateway_chat_url()
+    if not url:
+        return []
+    fqns, _ = inference_fqn_list()
+    out: list[ReplayTargetSpec] = []
+    for r in gateway_routes_from_inference_fqns(fqns):
+        route = str(r["route"])
+        out.append(
+            ReplayTargetSpec(
+                id=route,
+                label=str(r.get("display_label") or route),
+                url=url,
+                model=route,
+                headers={},
+                timeout_sec=120.0,
+            ),
+        )
+    return out
 
 
 def _replay_target_file_candidates() -> list[Path]:
@@ -151,13 +187,23 @@ def _parse_replay_targets_list(raw: str) -> tuple[list[ReplayTargetSpec], str | 
 
 def load_replay_targets() -> list[ReplayTargetSpec]:
     raw, _src, _notes = _replay_targets_json_raw()
-    targets, _err = _parse_replay_targets_list(raw)
-    return targets
+    configured, parse_err = _parse_replay_targets_list(raw)
+    if parse_err and raw.strip():
+        repaired = raw.strip()
+        if repaired.startswith("{") and not repaired.startswith("["):
+            configured, _ = _parse_replay_targets_list("[" + repaired + "]")
+    if configured:
+        return configured
+    return discover_gateway_replay_targets()
 
 
 def replay_targets_public() -> dict[str, Any]:
     raw, src, load_notes = _replay_targets_json_raw()
-    targets, parse_err = _parse_replay_targets_list(raw)
+    configured, parse_err = _parse_replay_targets_list(raw)
+    if parse_err and raw.strip() and raw.strip().startswith("{"):
+        configured, parse_err = _parse_replay_targets_list("[" + raw.strip() + "]")
+    discovered = discover_gateway_replay_targets()
+    targets = configured if configured else discovered
     s = get_settings()
     sql_tok = _normalize_bearer_token(s.databricks_token)
     gw_tok = _ai_gateway_token()
@@ -165,6 +211,14 @@ def replay_targets_public() -> dict[str, Any]:
         "targets": [
             {"id": t.id, "label": t.label, "model": t.model, "url": t.url}
             for t in targets
+        ],
+        "discovered_from_gateway": [
+            {"id": t.id, "label": t.label, "model": t.model}
+            for t in discovered
+        ],
+        "configured_from_file": [
+            {"id": t.id, "label": t.label, "model": t.model}
+            for t in configured
         ],
         "auth": {
             "sql_token_configured": bool(sql_tok),

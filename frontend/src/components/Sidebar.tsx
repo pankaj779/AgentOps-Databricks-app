@@ -6,9 +6,10 @@ import {
   Scale,
   ShieldCheck,
   Sparkles,
+  GitCompare,
 } from 'lucide-react'
 
-export type NavId = 'overview' | 'agents' | 'health' | 'cost' | 'quality' | 'governance'
+export type NavId = 'overview' | 'agents' | 'compare' | 'health' | 'cost' | 'quality' | 'governance'
 
 const items: { id: NavId; label: string; description: string; icon: typeof LayoutDashboard }[] =
   [
@@ -23,6 +24,12 @@ const items: { id: NavId; label: string; description: string; icon: typeof Layou
       label: 'Agents',
       description: 'Directory & requests',
       icon: FolderGit2,
+    },
+    {
+      id: 'compare',
+      label: 'Compare models',
+      description: 'Scorecard & live test',
+      icon: GitCompare,
     },
     {
       id: 'health',

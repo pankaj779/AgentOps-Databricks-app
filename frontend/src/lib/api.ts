@@ -154,6 +154,31 @@ export type BillingEndpointRow = {
   list_usd: number | null
 }
 
+/** Unscoped MODEL_SERVING billing rollup for the same window when scoped endpoint_name filter matched nothing. */
+export type BillingWorkspaceReference = {
+  hours?: number
+  total_dbu: number | null
+  total_list_usd: number | null
+  currency_code?: string
+  by_endpoint?: BillingEndpointRow[]
+  pricing_partial?: boolean
+  note?: string
+}
+
+export type BillingDiagnostic = {
+  configured_workspace_id?: string | null
+  top_workspaces?: {
+    workspace_id: string
+    billing_origin_product: string
+    usage_quantity: number
+  }[]
+  products_for_configured_workspace?: {
+    billing_origin_product: string
+    usage_quantity: number
+  }[]
+  error?: string | null
+}
+
 export type BillingCostSummary = {
   hours: number
   total_dbu: number | null
@@ -165,6 +190,11 @@ export type BillingCostSummary = {
   note: string
   attribution?: string
   endpoint_match_terms?: string[] | null
+  workspace_reference?: BillingWorkspaceReference | null
+  diagnostic?: BillingDiagnostic | null
+  usage_source?: string | null
+  total_list_usd_billing_table?: number | null
+  model_serving_products?: { billing_origin_product: string; usage_quantity: number }[]
 }
 
 export type CostByRequestRow = {
@@ -216,6 +246,8 @@ export type TraceRow = {
   url: string | null
   api_type: string | null
   requester: string | null
+  /** Parsed from request body when agent logs OpenAI `user` or metadata (email, display_name, …). */
+  request_actor?: string | null
   request_preview: string | null
   response_preview: string | null
   comparison_group_id?: string | null
@@ -367,6 +399,9 @@ export type TraceDetailResponse = {
   lineage_graph?: LineageGraph | null
   ai_gateway_usage?: Record<string, unknown> | null
   ai_gateway_usage_error?: string | null
+  cost_attribution?: CostAttribution | null
+  /** Which inference columns were resolved for bodies (debug UX). */
+  payload_columns_resolved?: { request_body?: string | null; response_body?: string | null } | null
 }
 
 export type QualityObservabilityResponse = {
@@ -378,6 +413,12 @@ export type QualityObservabilityResponse = {
   requests_sampled_for_json: number
   responses_with_reasoning_pct: number | null
   error: string | null
+  source?: string | null
+  note?: string | null
+  fallback_gateway_metrics?: boolean
+  inference_notes?: string | null
+  latency_column_used?: string | null
+  response_column_used?: string | null
 }
 
 export type QualityTrendPoint = {
@@ -418,14 +459,29 @@ export type RuntimeFlowModel = {
   requests: number
 }
 
+export type RuntimeFlowCaller = {
+  requester: string
+  requests: number
+  last_seen?: string | null
+}
+
 export type RuntimeFlowResponse = {
   window_days: number
   distinct_callers: number | null
   total_requests: number | null
   routes: RuntimeFlowRoute[]
   models: RuntimeFlowModel[]
+  callers?: RuntimeFlowCaller[]
   error: string | null
   note?: string | null
+}
+
+export type TelemetryNodeUsage = {
+  role?: string
+  fqn?: string
+  requests_7d?: number | null
+  est_tokens_7d?: number | null
+  used_by?: string[]
 }
 
 export type TelemetryHierarchyNode = {
@@ -434,6 +490,7 @@ export type TelemetryHierarchyNode = {
   label: string
   detail?: string | null
   meta?: string | null
+  usage?: TelemetryNodeUsage | null
 }
 
 export type TelemetryHierarchyGraph = {
@@ -452,6 +509,7 @@ export type GovernanceLineageResponse = {
   hint: string
   runtime_flow: RuntimeFlowResponse
   telemetry_hierarchy?: TelemetryHierarchyGraph | null
+  cost_tokens_hierarchy?: TelemetryHierarchyGraph | null
   has_uc_lineage?: boolean
   system_tables_doc_url: string
   lineage_system_table_doc_url: string
@@ -459,6 +517,7 @@ export type GovernanceLineageResponse = {
   workspace_lineage_recent?: LineageEdge[]
   workspace_lineage_note?: string
   workspace_lineage_recent_error?: string | null
+  pii_scan?: PiiScanResponse | null
 }
 
 export type MlflowRunRow = {
@@ -516,6 +575,7 @@ export type AgentCatalogEntry = {
 
 export type AgentsCatalogResponse = {
   agents: AgentCatalogEntry[]
+  catalog_mode?: 'unified_gateway' | 'inference_only' | string
   payload_table_count?: number
   gateway_distinct_models?: number
   fqns_note?: string | null
@@ -625,8 +685,8 @@ export async function postReplayRun(
   return parseJson<ReplayRunResponse>(res)
 }
 
-export async function fetchQualityObservability(): Promise<QualityObservabilityResponse> {
-  const res = await fetch('/api/v1/analytics/quality/observability')
+export async function fetchQualityObservability(hours = 168): Promise<QualityObservabilityResponse> {
+  const res = await fetch(`/api/v1/analytics/quality/observability?hours=${hours}`)
   return parseJson<QualityObservabilityResponse>(res)
 }
 
@@ -648,4 +708,119 @@ export async function fetchMlflowOverview(limit = 20): Promise<MlflowOverviewRes
 export async function fetchGovernanceAudit(limit = 40): Promise<GovernanceAuditResponse> {
   const res = await fetch(`/api/v1/analytics/governance/audit?limit=${limit}`)
   return parseJson<GovernanceAuditResponse>(res)
+}
+
+export type StatusSummary = {
+  generated_at: string
+  sql_ok: boolean
+  sql_error?: string | null
+  agent_count: number
+  payload_table_count: number
+  fqns_note?: string | null
+  exclude_test_requests: boolean
+  host?: string | null
+}
+
+export type ChangeAlert = {
+  severity: string
+  title: string
+  detail: string
+  metric?: string
+  model?: string
+}
+
+export type HealthCheckItem = {
+  name: string
+  ok: boolean
+  detail: string
+  fix_hint?: string | null
+}
+
+export type HealthCheckResponse = {
+  checks: HealthCheckItem[]
+  passed: number
+  total: number
+  all_ok: boolean
+  error?: string
+}
+
+export type CompareScorecardRow = {
+  route: string
+  label: string
+  fqn?: string | null
+  requests_7d: number
+  total_tokens_7d: number
+  input_tokens_7d: number
+  output_tokens_7d: number
+  display_labels?: string[]
+  in_replay_targets: boolean
+}
+
+export type CompareScorecardResponse = {
+  window_hours: number
+  rows: CompareScorecardRow[]
+  gateway_error?: string | null
+  target_count: number
+}
+
+export type UserSettings = {
+  exclude_test_requests: boolean
+  default_compare_prompt?: string
+  pinned_dashboard_note?: string | null
+}
+
+export type PiiScanResponse = {
+  matches: number
+  samples: { request_id: string | null; kinds: string[]; preview: string }[]
+  error?: string | null
+  scanned_rows: number
+  window_days?: number
+  note?: string
+}
+
+export type CostAttribution = {
+  request_id: string
+  gateway_tokens: number | null
+  /** How tokens were correlated (ai_gateway row vs heuristic vs completion.usage). */
+  metering_source?: string | null
+  list_usd: number | null
+  dbu: number | null
+  attribution?: string | null
+  by_endpoint?: { endpoint_name?: string; dbu?: number; list_usd?: number }[]
+  note?: string | null
+  error?: string | null
+}
+
+export async function fetchStatusSummary(): Promise<StatusSummary> {
+  const res = await fetch('/api/v1/status/summary')
+  return parseJson<StatusSummary>(res)
+}
+
+export async function fetchAlerts(hours = 168): Promise<{ alerts: ChangeAlert[]; window_hours: number }> {
+  const res = await fetch(`/api/v1/alerts/changes?hours=${hours}`)
+  return parseJson(res)
+}
+
+export async function runHealthCheck(): Promise<HealthCheckResponse> {
+  const res = await fetch('/api/v1/health-check/workspace')
+  return parseJson<HealthCheckResponse>(res)
+}
+
+export async function fetchCompareScorecard(hours = 168): Promise<CompareScorecardResponse> {
+  const res = await fetch(`/api/v1/compare/scorecard?hours=${hours}`)
+  return parseJson<CompareScorecardResponse>(res)
+}
+
+export async function fetchSettings(): Promise<UserSettings> {
+  const res = await fetch('/api/v1/settings')
+  return parseJson<UserSettings>(res)
+}
+
+export async function patchSettings(patch: Partial<UserSettings>): Promise<UserSettings> {
+  const res = await fetch('/api/v1/settings', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  return parseJson<UserSettings>(res)
 }

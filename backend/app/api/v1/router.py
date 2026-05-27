@@ -115,6 +115,8 @@ def _scope_from_request(
     gateway_model: str | None,
 ) -> tuple[list[str], list[str]]:
     """Resolve URL scope to (inference table fqns/keys, gateway model labels)."""
+    from app.services.agent_unify import inference_fqn_for_agent_key
+
     keys: list[str] = []
     if agents:
         for a in agents:
@@ -127,6 +129,11 @@ def _scope_from_request(
     infer: list[str] = []
     gw: list[str] = []
     for k in keys:
+        fqn = inference_fqn_for_agent_key(k)
+        if fqn:
+            if fqn not in infer:
+                infer.append(fqn)
+            continue
         st, g = _analytics_filters(k, None, None)
         if st and st not in infer:
             infer.append(st)
@@ -280,6 +287,38 @@ def agents() -> list[AgentSummary]:
         ]
 
     if dto.data_mode == "live":
+        from app.services.agent_unify import unified_agents_catalog
+        from app.services.analytics import gateway_agent_rollups
+
+        cat = unified_agents_catalog()
+        unified = [a for a in cat.get("agents") or [] if a.get("kind") == "gateway_route"]
+        if unified:
+            roll_by_slug: dict[str, dict[str, Any]] = {}
+            for r in gateway_agent_rollups(limit=50, hours=24):
+                rid = str(r.get("id") or "")
+                roll_by_slug[rid.lower()] = r
+                roll_by_slug["".join(c for c in rid.lower() if c.isalnum() or c in "-_")] = r
+            rows: list[AgentSummary] = []
+            for a in unified:
+                route = str(a.get("gateway_model") or a.get("label") or "unknown")
+                slug = route.lower()
+                r = roll_by_slug.get(slug) or roll_by_slug.get(str(a.get("label") or "").lower())
+                rows.append(
+                    AgentSummary(
+                        id=slug[:128],
+                        name=str(a.get("label") or slug),
+                        status="healthy"
+                        if not r or float(r.get("error_rate_pct") or 0) < 2.0
+                        else "degraded",
+                        rpm=float(r.get("rpm") or 0) if r else 0.0,
+                        p95_latency_ms=float(r.get("p95_latency_ms") or 0) if r else 0.0,
+                        error_rate_pct=float(r.get("error_rate_pct") or 0) if r else 0.0,
+                        source="ai_gateway",
+                        agent_key=f"gw:{slug}",
+                    ),
+                )
+            return rows
+
         rollups = inference_agent_rollups()
         fqns, _ = inference_fqn_list()
         gw = ai_gateway_usage_rollup(24)
@@ -295,7 +334,7 @@ def agents() -> list[AgentSummary]:
                     p95_latency_ms=0,
                     error_rate_pct=0.0,
                     source="ai_gateway",
-                    agent_key=f"gw:{str(m.get('model') or 'unknown')}",
+                    agent_key=f"gw:{str(m.get('model') or 'unknown').lower()}",
                 )
                 for m in gw_models
             ]
@@ -491,10 +530,10 @@ def replay_run_endpoint(body: ReplayRunBody) -> dict[str, Any]:
 
 
 @router.get("/analytics/quality/observability")
-def analytics_quality_observability() -> dict[str, Any]:
+def analytics_quality_observability(hours: int = 168) -> dict[str, Any]:
     if not get_settings().databricks_token:
         return {"error": "DATABRICKS_TOKEN not configured"}
-    return quality_observability()
+    return quality_observability(hours=hours)
 
 
 @router.get("/analytics/quality/trend")
@@ -523,3 +562,51 @@ def analytics_governance_audit(limit: int = 40) -> dict[str, Any]:
     if not get_settings().databricks_token:
         return {"error": "DATABRICKS_TOKEN not configured", "events": []}
     return governance_audit(limit=limit)
+
+
+@router.get("/status/summary")
+def status_summary_route() -> dict[str, Any]:
+    from app.services.status_summary import workspace_status_summary
+
+    return workspace_status_summary()
+
+
+@router.get("/alerts/changes")
+def alerts_changes_route(hours: int = 168) -> dict[str, Any]:
+    from app.services.alerts import compute_change_alerts
+
+    return compute_change_alerts(hours=hours)
+
+
+@router.get("/health-check/workspace")
+def workspace_health_check_route() -> dict[str, Any]:
+    from app.services.health_check import run_workspace_health_check
+
+    return run_workspace_health_check()
+
+
+@router.get("/compare/scorecard")
+def compare_scorecard_route(hours: int = 168) -> dict[str, Any]:
+    from app.services.compare_scorecard import build_compare_scorecard
+
+    return build_compare_scorecard(hours=hours)
+
+
+@router.get("/settings")
+def get_settings_route() -> dict[str, Any]:
+    from app.services.app_config_store import get_user_settings
+
+    return get_user_settings()
+
+
+class SettingsPatchBody(BaseModel):
+    exclude_test_requests: bool | None = None
+    default_compare_prompt: str | None = None
+    pinned_dashboard_note: str | None = None
+
+
+@router.patch("/settings")
+def patch_settings_route(body: SettingsPatchBody) -> dict[str, Any]:
+    from app.services.app_config_store import patch_user_settings
+
+    return patch_user_settings(body.model_dump(exclude_none=True))

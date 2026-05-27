@@ -1,9 +1,18 @@
 import { useCallback, useMemo, useState } from 'react'
-import type { TelemetryHierarchyGraph as TelemetryGraph } from '@/lib/api'
+import type { TelemetryHierarchyGraph as TelemetryGraph, TelemetryHierarchyNode } from '@/lib/api'
 
-const KIND_ORDER = ['uc_upstream', 'gateway', 'route', 'schema', 'table', 'uc_downstream'] as const
+const DATA_KIND_ORDER = [
+  'uc_upstream',
+  'gateway',
+  'route',
+  'schema',
+  'table',
+  'uc_downstream',
+] as const
 
-const kindColor: Record<string, string> = {
+const COST_KIND_ORDER = ['billing_source', 'usage_table', 'schema', 'table'] as const
+
+const dataKindColor: Record<string, string> = {
   gateway: '#22d3ee',
   route: '#38bdf8',
   schema: '#ff3621',
@@ -12,9 +21,19 @@ const kindColor: Record<string, string> = {
   uc_downstream: '#a78bfa',
 }
 
-type PlacedNode = TelemetryGraph['nodes'][0] & { x: number; y: number; w: number; h: number }
+const costKindColor: Record<string, string> = {
+  billing_source: '#fbbf24',
+  usage_table: '#38bdf8',
+  schema: '#ff3621',
+  table: '#2dd4bf',
+}
 
-function layoutNodes(nodes: TelemetryGraph['nodes']): { placed: PlacedNode[]; width: number; height: number } {
+type PlacedNode = TelemetryHierarchyNode & { x: number; y: number; w: number; h: number }
+
+function layoutNodes(
+  nodes: TelemetryHierarchyNode[],
+  kindOrder: readonly string[],
+): { placed: PlacedNode[]; width: number; height: number } {
   const byKind = (k: string) => nodes.filter((n) => n.kind === k)
   const layerGap = 72
   const nodeW = 172
@@ -25,7 +44,7 @@ function layoutNodes(nodes: TelemetryGraph['nodes']): { placed: PlacedNode[]; wi
   const placed: PlacedNode[] = []
   let maxRowW = 0
 
-  for (const kind of KIND_ORDER) {
+  for (const kind of kindOrder) {
     const layer = byKind(kind)
     if (!layer.length) continue
     const rowW = layer.length * nodeW + Math.max(0, layer.length - 1) * gapX
@@ -93,14 +112,13 @@ function walkDownstream(startId: string, edges: TelemetryGraph['edges'], nodes: 
   }
 }
 
-/** Highlighted lineage for any hovered node (gateway / route / schema / table). */
 function lineagePathForNode(
   nodeId: string,
   kind: string | undefined,
   edges: TelemetryGraph['edges'],
   allIds: Set<string>,
 ): { nodes: Set<string>; edgeKeys: Set<string> } {
-  if (kind === 'gateway') {
+  if (kind === 'gateway' || kind === 'billing_source') {
     const nodes = new Set(allIds)
     return { nodes, edgeKeys: collectEdges(nodes, edges) }
   }
@@ -131,7 +149,7 @@ function lineagePathForNode(
     return { nodes, edgeKeys: collectEdges(nodes, edges) }
   }
 
-  if (kind === 'schema') {
+  if (kind === 'schema' || kind === 'usage_table') {
     const nodes = new Set<string>([nodeId])
     walkUpstream(nodeId, edges, nodes)
     for (const e of edges) {
@@ -155,6 +173,41 @@ function lineagePathForNode(
   return { nodes, edgeKeys: collectEdges(nodes, edges) }
 }
 
+function NodeDetailPanel({ n, pinned }: { n: PlacedNode; pinned: boolean }) {
+  const u = n.usage
+  return (
+    <div className="mt-3 rounded-lg border border-[var(--color-teal)]/40 bg-[var(--color-teal)]/10 px-3 py-2 text-xs">
+      <div className="font-semibold text-[var(--color-fg)]">{n.label}</div>
+      <div className="mt-0.5 text-[10px] uppercase tracking-wide text-[var(--color-muted)]">
+        {(n.kind ?? 'node').replace(/_/g, ' ')}
+        {pinned ? ' · pinned' : ' · hover'}
+      </div>
+      {n.detail ? (
+        <div className="mt-1 break-all font-mono text-[10px] text-[var(--color-muted)]">{n.detail}</div>
+      ) : null}
+      {n.meta ? <div className="mt-1 text-[var(--color-muted)]">{n.meta}</div> : null}
+      {u?.role ? <p className="mt-2 text-[var(--color-fg)]">{u.role}</p> : null}
+      {u?.requests_7d != null || u?.est_tokens_7d != null ? (
+        <p className="mt-1 tabular-nums text-[var(--color-teal)]">
+          {u?.requests_7d != null ? `${u.requests_7d} requests (7d)` : ''}
+          {u?.requests_7d != null && u?.est_tokens_7d != null ? ' · ' : ''}
+          {u?.est_tokens_7d != null ? `~${u.est_tokens_7d.toLocaleString()} est. tokens` : ''}
+        </p>
+      ) : null}
+      {u?.used_by?.length ? (
+        <div className="mt-2">
+          <div className="text-[10px] font-semibold uppercase text-[var(--color-muted)]">Used in AgentOps</div>
+          <ul className="mt-1 list-inside list-disc text-[10px] text-[var(--color-muted)]">
+            {u.used_by.map((x) => (
+              <li key={x}>{x}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function NodeShape({
   n,
   fill,
@@ -173,8 +226,15 @@ function NodeShape({
   onPin?: () => void
 }) {
   const interactive = Boolean(onHover || onPin)
+  const tip =
+    n.usage?.role && n.kind === 'table'
+      ? `${n.label}: ${n.usage.role}`
+      : n.meta
+        ? `${n.label} — ${n.meta}`
+        : n.label
   return (
     <g opacity={active ? 1 : 0.18} style={{ pointerEvents: interactive ? 'auto' : 'none' }}>
+      <title>{tip}</title>
       <rect
         x={n.x}
         y={n.y}
@@ -220,22 +280,31 @@ function NodeShape({
           fontSize="9"
           pointerEvents="none"
         >
-          {n.meta}
+          {n.meta.length > 28 ? `${n.meta.slice(0, 26)}…` : n.meta}
         </text>
       ) : null}
     </g>
   )
 }
 
-export function TelemetryHierarchyGraph({ graph }: { graph: TelemetryGraph | null | undefined }) {
+export function TelemetryHierarchyGraph({
+  graph,
+  variant = 'data',
+}: {
+  graph: TelemetryGraph | null | undefined
+  variant?: 'data' | 'cost_tokens'
+}) {
   const [zoom, setZoom] = useState(1)
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [pinnedId, setPinnedId] = useState<string | null>(null)
   const focusId = pinnedId ?? hoverId
 
+  const kindOrder = variant === 'cost_tokens' ? COST_KIND_ORDER : DATA_KIND_ORDER
+  const colors = variant === 'cost_tokens' ? costKindColor : dataKindColor
+
   const { placed, edges, width, height, tableNodes, otherNodes } = useMemo(() => {
     const nodes = graph?.nodes ?? []
-    const { placed, width, height } = layoutNodes(nodes)
+    const { placed, width, height } = layoutNodes(nodes, kindOrder)
     return {
       placed,
       edges: graph?.edges ?? [],
@@ -244,7 +313,7 @@ export function TelemetryHierarchyGraph({ graph }: { graph: TelemetryGraph | nul
       tableNodes: placed.filter((n) => n.kind === 'table'),
       otherNodes: placed.filter((n) => n.kind !== 'table'),
     }
-  }, [graph])
+  }, [graph, kindOrder])
 
   const allIds = useMemo(() => new Set(placed.map((n) => n.id)), [placed])
 
@@ -271,7 +340,7 @@ export function TelemetryHierarchyGraph({ graph }: { graph: TelemetryGraph | nul
   const pos = new Map(placed.map((n) => [n.id, n]))
 
   const renderNode = (n: PlacedNode) => {
-    const fill = kindColor[n.kind ?? ''] ?? '#94a3b8'
+    const fill = colors[n.kind ?? ''] ?? '#94a3b8'
     const active = !highlight || highlight.nodes.has(n.id)
     const isFocus = focusId === n.id
     return (
@@ -288,11 +357,16 @@ export function TelemetryHierarchyGraph({ graph }: { graph: TelemetryGraph | nul
     )
   }
 
+  const hint =
+    variant === 'cost_tokens'
+      ? 'Billing → gateway metering → payload tables. Hover a table for how AgentOps uses it.'
+      : 'AI Gateway → routes → payload tables. Hover a table for usage details.'
+
   return (
     <div className="relative w-full min-w-0">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <span className="text-[10px] text-[var(--color-muted)]">
-          Scroll to pan · +/- to zoom · hover or click any node to highlight its path (click again to unpin)
+          {hint} Scroll to pan · +/- zoom · click to pin path.
         </span>
         <div className="flex items-center gap-1">
           <button
@@ -338,7 +412,7 @@ export function TelemetryHierarchyGraph({ graph }: { graph: TelemetryGraph | nul
             viewBox={`0 0 ${width} ${height}`}
             className="block"
             role="img"
-            aria-label="Data flow hierarchy"
+            aria-label={variant === 'cost_tokens' ? 'Cost and tokens lineage' : 'Data flow hierarchy'}
           >
             <defs>
               <marker id="ln-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
@@ -379,18 +453,7 @@ export function TelemetryHierarchyGraph({ graph }: { graph: TelemetryGraph | nul
         </div>
       </div>
 
-      {focusedNode ? (
-        <div className="mt-3 rounded-lg border border-[var(--color-teal)]/40 bg-[var(--color-teal)]/10 px-3 py-2 text-xs">
-          <div className="font-semibold text-[var(--color-fg)]">{focusedNode.label}</div>
-          {focusedNode.detail ? (
-            <div className="mt-1 break-all font-mono text-[10px] text-[var(--color-muted)]">{focusedNode.detail}</div>
-          ) : null}
-          {focusedNode.meta ? <div className="mt-1 text-[var(--color-muted)]">{focusedNode.meta}</div> : null}
-          <div className="mt-1 text-[10px] text-[var(--color-teal)]">
-            {pinnedId ? 'Pinned' : 'Hover'}: {focusedNode.kind ?? 'node'} — path to this node only
-          </div>
-        </div>
-      ) : null}
+      {focusedNode ? <NodeDetailPanel n={focusedNode} pinned={Boolean(pinnedId)} /> : null}
     </div>
   )
 }

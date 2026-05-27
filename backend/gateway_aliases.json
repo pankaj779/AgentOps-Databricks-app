@@ -1,0 +1,6 @@
+[
+  { "display": "Gemma 3 12B", "route": "gemma-3-model_payload" },
+  { "display": "Llama 4 Maverick", "route": "llama-4-model_payload" },
+  { "display": "agentops_test", "route": "agentops_test" },
+  { "display": "GPT-5.4 Nano", "route": "gpt-5-4-nano" }
+]

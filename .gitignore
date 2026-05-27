@@ -1,5 +1,6 @@
 .env
 backend/replay_targets.json
+backend/agentops_app_config.db
 .env.*.local
 .venv/
 venv/

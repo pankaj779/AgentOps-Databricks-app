@@ -15,6 +15,7 @@ from app.services.analytics import (
     quality_score_from_observability,
 )
 from app.services.databricks_status import sql_probe
+from app.services.agent_unify import unified_agents_catalog
 from app.services.inference import (
     count_since_hours,
     discovered_payload_table_count,
@@ -139,17 +140,19 @@ def build_overview(*, window_hours: int = 168) -> OverviewDTO:
     err_pct = float(inf["error_rate_pct_24h"]) if inf.get("error_rate_pct_24h") is not None else 0.0
 
     if c24 is not None:
-        with ThreadPoolExecutor(max_workers=3) as ex:
+        with ThreadPoolExecutor(max_workers=5) as ex:
             fut_roll = ex.submit(inference_agent_rollups)
             fut_snap = ex.submit(ai_gateway_token_snapshots)
             fut_q = ex.submit(quality_observability)
+            fut_gw24 = ex.submit(ai_gateway_usage_rollup, 24)
+            fut_gww = ex.submit(ai_gateway_usage_rollup, wh)
             rollups = fut_roll.result(timeout=300)
             snap = fut_snap.result(timeout=300)
             qo = fut_q.result(timeout=300)
-        gw_rollup = ai_gateway_usage_rollup(24)
+            gw_rollup = fut_gw24.result(timeout=300)
+            gw_window = fut_gww.result(timeout=300)
         gw_models = (gw_rollup.get("by_model") or []) if not gw_rollup.get("error") else []
         gw_req = int(gw_rollup.get("total_requests") or 0) if not gw_rollup.get("error") else 0
-        gw_window = ai_gateway_usage_rollup(wh)
         gw_tokens_window = (
             int(gw_window.get("total_tokens") or 0) if not gw_window.get("error") else None
         )
@@ -157,8 +160,18 @@ def build_overview(*, window_hours: int = 168) -> OverviewDTO:
         fqns, _fqnote = inference_fqn_list()
         if fqns and inf.get("time_column"):
             try:
+                from app.services.compare_run import test_request_sql_exclude_fragment
+                from app.services.inference import describe_columns, quote_fqn
+
                 table_sql = inference_query_table_sql(fqns)
-                count_window, _ = count_since_hours(table_sql, str(inf["time_column"]), wh)
+                cols, _ = describe_columns(quote_fqn(fqns[0]))
+                test_excl = test_request_sql_exclude_fragment(cols or [])
+                count_window, _ = count_since_hours(
+                    table_sql,
+                    str(inf["time_column"]),
+                    wh,
+                    request_exclude_sql=test_excl,
+                )
             except ValueError:
                 count_window = None
 
@@ -171,12 +184,16 @@ def build_overview(*, window_hours: int = 168) -> OverviewDTO:
         roll_has_traffic = bool(
             rollups and any(int(r.get("requests_24h") or 0) > 0 for r in rollups),
         )
-        n_roll = len(rollups) if rollups else 0
-        n_gw = len(gw_models)
-        n_f = len(fqns) if fqns else 0
-        n_discovered = int(inf.get("tables_discovered_count") or 0) or discovered_payload_table_count()
-        # One payload table per AI Gateway route (includes idle tables).
-        n_agents = max(n_discovered, n_f, 0) if (n_discovered or n_f) else max(n_gw, n_roll if roll_has_traffic else 0, 0)
+        cat = unified_agents_catalog()
+        n_agents = len(cat.get("agents") or [])
+        if n_agents == 0:
+            n_roll = len(rollups) if rollups else 0
+            n_gw = len(gw_models)
+            n_f = len(fqns) if fqns else 0
+            n_discovered = int(inf.get("tables_discovered_count") or 0) or discovered_payload_table_count()
+            n_agents = max(n_discovered, n_f, 0) if (n_discovered or n_f) else max(
+                n_gw, n_roll if roll_has_traffic else 0, 0
+            )
         if n_agents == 0:
             n_agents = max(1, min(99, req24 // 500 + 1))
 
@@ -204,15 +221,23 @@ def build_overview(*, window_hours: int = 168) -> OverviewDTO:
         )
 
     # SQL works; inference payload tables missing or unreadable — still surface AI Gateway when available.
-    snap = ai_gateway_token_snapshots()
-    gw_rollup = ai_gateway_usage_rollup(24)
-    gw_window = ai_gateway_usage_rollup(wh)
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        fut_snap = ex.submit(ai_gateway_token_snapshots)
+        fut_gw24 = ex.submit(ai_gateway_usage_rollup, 24)
+        fut_gww = ex.submit(ai_gateway_usage_rollup, wh)
+        fut_q = ex.submit(quality_observability)
+        snap = fut_snap.result(timeout=300)
+        gw_rollup = fut_gw24.result(timeout=300)
+        gw_window = fut_gww.result(timeout=300)
+        qo = fut_q.result(timeout=300)
     gw_req = int(gw_rollup.get("total_requests") or 0) if not gw_rollup.get("error") else 0
     gw_models = (gw_rollup.get("by_model") or []) if not gw_rollup.get("error") else []
-    n_discovered = int(inf.get("tables_discovered_count") or 0) or discovered_payload_table_count()
-    fqns_partial, _ = inference_fqn_list()
-    n_agents = max(n_discovered, len(fqns_partial), len(gw_models), 0)
-    qo = quality_observability()
+    cat = unified_agents_catalog()
+    n_agents = len(cat.get("agents") or [])
+    if n_agents == 0:
+        n_discovered = int(inf.get("tables_discovered_count") or 0) or discovered_payload_table_count()
+        fqns_partial, _ = inference_fqn_list()
+        n_agents = max(n_discovered, len(fqns_partial), len(gw_models), 0)
     q_score = quality_score_from_observability(qo)
     gw_err_pct = float(qo.get("error_rate_pct") or 0) if not qo.get("error") else 0.0
     return OverviewDTO(

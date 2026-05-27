@@ -32,7 +32,7 @@ const axisProps = {
   tick: { fill: 'var(--color-muted)', fontSize: 10 },
 }
 
-export function HealthView() {
+export function HealthView({ refreshToken = 0 }: { refreshToken?: number }) {
   const { agents: scopeAgents } = useWorkspaceSelection()
   const [agentList, setAgentList] = useState<AgentSummary[]>([])
   const [ts, setTs] = useState<HealthTimeseriesResponse | null>(null)
@@ -69,7 +69,7 @@ export function HealthView() {
     return () => {
       cancelled = true
     }
-  }, [scopeAgents.join('\0'), hours])
+  }, [scopeAgents.join('\0'), hours, refreshToken])
 
   const tsErr = ts?.error
   const sloErr = slo?.error
@@ -118,6 +118,25 @@ export function HealthView() {
             {cost.billing.total_dbu != null ? `${cost.billing.total_dbu.toFixed(6)} DBU` : ''} · from system.billing
             (DBU × list price) — separate from token estimate below
           </div>
+          {cost.billing.total_list_usd === 0 &&
+          cost.billing.workspace_reference &&
+          (cost.billing.workspace_reference.total_list_usd ?? 0) > 0 ? (
+            <p className="mt-2 text-xs text-[var(--color-teal)]">
+              Workspace (unscoped filter):{' '}
+              <span className="font-semibold tabular-nums">
+                {cost.billing.workspace_reference.currency_code ?? cost.billing.currency_code}{' '}
+                {(cost.billing.workspace_reference.total_list_usd ?? 0).toFixed(4)}
+              </span>
+              {cost.billing.workspace_reference.total_dbu != null &&
+              (cost.billing.workspace_reference.total_dbu ?? 0) > 0 ? (
+                <>
+                  {' '}
+                  · {(cost.billing.workspace_reference.total_dbu ?? 0).toFixed(6)} DBU
+                </>
+              ) : null}
+              . Scoped billing had no matching rows; this is the same window without endpoint filter.
+            </p>
+          ) : null}
         </Card>
       ) : null}
 

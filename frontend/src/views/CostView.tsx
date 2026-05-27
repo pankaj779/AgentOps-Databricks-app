@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Area,
   AreaChart,
@@ -31,16 +31,20 @@ function shortBucket(iso: string) {
   }
 }
 
-export function CostView() {
+export function CostView({ refreshToken = 0 }: { refreshToken?: number }) {
   const { agents, clearAll, tasks } = useWorkspaceSelection()
   const [data, setData] = useState<CostSummaryResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const sawDataRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [hours, setHours] = useState<TimeRangeHours>(168)
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
+    const blocking = !sawDataRef.current
+    if (blocking) setLoading(true)
+    else setRefreshing(true)
     ;(async () => {
       try {
         const c = await fetchCostSummary(hours, {
@@ -49,18 +53,22 @@ export function CostView() {
         })
         if (!cancelled) {
           setData(c)
+          sawDataRef.current = true
           setError(null)
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load')
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+          setRefreshing(false)
+        }
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [agents, tasks, hours])
+  }, [agents, tasks, hours, refreshToken])
 
   const hourlyChart = useMemo(
     () =>
@@ -87,13 +95,32 @@ export function CostView() {
   const bill = data?.billing
   const gw = data?.ai_gateway
   const billAttr = bill?.attribution
+  const billWs = bill?.workspace_reference
+  const billWsUsd = billWs?.total_list_usd != null ? Number(billWs.total_list_usd) : null
+  const billWsDbu = billWs?.total_dbu != null ? Number(billWs.total_dbu) : null
+  const tokenEst = data?.token_cost_estimate
+
+  const sourceOfTruth = useMemo(() => {
+    const billUsd = bill?.total_list_usd != null ? Number(bill.total_list_usd) : null
+    const gwTok = gw && !gw.error && gw.total_tokens != null ? Number(gw.total_tokens) : null
+    const proxy = total != null ? Math.round(total) : null
+    return { billUsd, gwTok, proxy }
+  }, [bill, gw, total])
 
   const listPriceSubtitle =
-    billAttr === 'endpoint_filtered'
-      ? 'Scoped — gateway/log labels → billing endpoint_name (fuzzy LIKE)'
-      : billAttr === 'endpoint_unmatched'
-        ? 'Scope on, but no billing rows matched — check note below'
-        : 'Workspace — all MODEL_SERVING TOKEN endpoints in window'
+    billAttr === 'request_pinned_token_prorated'
+      ? 'Pinned requests — DBU/list USD prorated from workspace billing by gateway token share (billing has no request_id)'
+      : billAttr === 'request_pinned'
+      ? 'Pinned requests — billing matched via gateway endpoint labels'
+      : billAttr === 'ai_gateway_token_estimate'
+        ? 'Databricks-hosted traffic — token estimate (billing.usage had no MODEL_SERVING/AI_GATEWAY DBU rows yet)'
+        : billAttr === 'endpoint_filtered'
+        ? 'Scoped — gateway labels → billing endpoint (fuzzy LIKE)'
+        : billAttr === 'endpoint_unmatched'
+          ? 'Scope on, but no billing rows matched — check note below'
+          : bill?.usage_source === 'system.billing.usage'
+            ? 'Workspace — MODEL_SERVING / AI_GATEWAY DBU × list_prices'
+            : 'Workspace — list price estimate'
 
   const costLooksEmpty = useMemo(() => {
     if (!data) return false
@@ -105,12 +132,17 @@ export function CostView() {
         (gw.by_model?.length ?? 0) > 0)
     const billHas =
       bill && !bill.error && bill.total_list_usd != null && bill.total_list_usd > 0
+    const billWsHas =
+      bill?.workspace_reference &&
+      !bill.error &&
+      ((bill.workspace_reference.total_list_usd ?? 0) > 0 ||
+        (bill.workspace_reference.total_dbu ?? 0) > 0)
     const rollups = (data.by_destination ?? []).length > 0
     const hourly = (data.hourly ?? []).length > 0
     const byReqHas = (data.by_request ?? []).some(
       (r) => (r.gateway_total_tokens ?? 0) > 0 || (r.est_payload_tokens ?? 0) > 0,
     )
-    return !gwHas && !billHas && !rollups && !hourly && !byReqHas
+    return !gwHas && !billHas && !billWsHas && !rollups && !hourly && !byReqHas
   }, [data, gw, bill])
 
   return (
@@ -120,6 +152,35 @@ export function CostView() {
 
       <DataLoadingState loading={loading} label="Loading cost & tokens…">
       <Card title="Cost & tokens">
+        {refreshing ? (
+          <p className="mb-2 text-[11px] text-[var(--color-muted)]" aria-live="polite">
+            Refreshing workspace billing and gateway numbers — previous totals stay visible below.
+          </p>
+        ) : null}
+        <div className="mb-4 rounded-lg border border-[var(--color-teal)]/35 bg-[var(--color-teal)]/8 px-3 py-2 text-xs text-[var(--color-fg)]">
+          <span className="font-semibold text-[var(--color-teal)]">Source of truth — </span>
+          Billing (list price):{' '}
+          <span className="tabular-nums font-medium">
+            {sourceOfTruth.billUsd != null ? `USD ${sourceOfTruth.billUsd.toFixed(4)}` : '—'}
+          </span>
+          {' · '}
+          Gateway tokens:{' '}
+          <span className="tabular-nums font-medium">
+            {sourceOfTruth.gwTok != null ? sourceOfTruth.gwTok.toLocaleString() : '—'}
+          </span>
+          {' · '}
+          Log proxy (estimate only):{' '}
+          <span className="tabular-nums text-[var(--color-muted)]">
+            {sourceOfTruth.proxy != null ? `~${sourceOfTruth.proxy.toLocaleString()}` : '—'}
+          </span>
+          {tasks.length > 0 ? (
+            <span className="ml-2 text-[var(--color-teal)]">
+              · scoped to {tasks.length} pinned request{tasks.length === 1 ? '' : 's'}
+            </span>
+          ) : agents.length > 0 ? (
+            <span className="ml-2 text-[var(--color-teal)]">· {agents.length} agent(s)</span>
+          ) : null}
+        </div>
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <label className="text-xs text-[var(--color-muted)]" htmlFor="cost-hours">
             Time range
@@ -202,7 +263,7 @@ export function CostView() {
             </ul>
           </div>
         ) : null}
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]/80 px-4 py-3">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
               List price (est.)
@@ -213,6 +274,20 @@ export function CostView() {
                 ? `${bill.currency_code} ${bill.total_list_usd.toFixed(4)}`
                 : '—'}
             </div>
+            {bill &&
+            !bill.error &&
+            bill.total_list_usd != null &&
+            bill.total_list_usd === 0 &&
+            billWsUsd != null &&
+            billWsUsd > 0 ? (
+              <p className="mt-2 text-[10px] leading-snug text-[var(--color-teal)]">
+                Workspace (no endpoint filter):{' '}
+                <span className="font-semibold tabular-nums">
+                  {billWs?.currency_code ?? bill.currency_code} {billWsUsd.toFixed(4)}
+                </span>{' '}
+                — scoped billing names did not match; see note below.
+              </p>
+            ) : null}
           </div>
           <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]/80 px-4 py-3">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
@@ -222,6 +297,17 @@ export function CostView() {
             <div className="mt-1 text-2xl font-semibold tabular-nums text-[var(--color-fg)]">
               {bill && !bill.error && bill.total_dbu != null ? bill.total_dbu.toFixed(6) : '—'}
             </div>
+            {bill &&
+            !bill.error &&
+            bill.total_dbu != null &&
+            bill.total_dbu === 0 &&
+            billWsDbu != null &&
+            billWsDbu > 0 ? (
+              <p className="mt-2 text-[10px] leading-snug text-[var(--color-teal)]">
+                Workspace DBU:{' '}
+                <span className="font-semibold tabular-nums">{billWsDbu.toFixed(6)}</span>
+              </p>
+            ) : null}
           </div>
           <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]/80 px-4 py-3">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
@@ -241,6 +327,17 @@ export function CostView() {
               {gw && !gw.error && gw.total_requests != null ? gw.total_requests.toLocaleString() : '—'}
             </div>
           </div>
+          <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]/80 px-4 py-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
+              Token est. (env rate)
+            </div>
+            <div className="mt-0.5 text-[10px] text-[var(--color-muted)]">
+              Gateway tokens × ${tokenEst?.usd_per_1m_tokens ?? 0.7}/1M — fallback when billing.usage has no DBU rows
+            </div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums text-[var(--color-teal)]">
+              {tokenEst?.estimated_usd != null ? `USD ${tokenEst.estimated_usd.toFixed(4)}` : '—'}
+            </div>
+          </div>
         </div>
         {bill?.pricing_partial ? (
           <p className="mt-2 text-xs text-[var(--color-warn-fg)]">Some rows missing a list price.</p>
@@ -249,6 +346,27 @@ export function CostView() {
         {gw?.error ? <p className="mt-2 text-sm text-[var(--color-warn-fg)]">{gw.error}</p> : null}
         {bill && !bill.error && bill.note ? (
           <p className="mt-3 text-[11px] text-[var(--color-muted)]">{bill.note}</p>
+        ) : null}
+        {bill?.diagnostic?.top_workspaces?.length &&
+        bill.total_list_usd === 0 &&
+        !bill.error ? (
+          <div className="mt-3 rounded-lg border border-[var(--color-warn-fg)]/30 bg-[var(--color-warn-fg)]/10 px-3 py-2 text-[11px] text-[var(--color-muted)]">
+            <p className="font-medium text-[var(--color-warn-fg)]">Billing diagnostic</p>
+            <p className="mt-1">
+              Configured workspace{' '}
+              <span className="font-mono text-[var(--color-fg)]">
+                {bill.diagnostic.configured_workspace_id ?? '—'}
+              </span>
+              . Top TOKEN billing in this window:
+            </p>
+            <ul className="mt-1 list-inside list-disc font-mono text-[10px]">
+              {bill.diagnostic.top_workspaces.slice(0, 5).map((w) => (
+                <li key={`${w.workspace_id}-${w.billing_origin_product}`}>
+                  ws {w.workspace_id} · {w.billing_origin_product} · qty {w.usage_quantity.toFixed(4)}
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : null}
       </Card>
 
@@ -359,7 +477,10 @@ export function CostView() {
       ) : null}
 
       {gw && !gw.error && (gw.by_model ?? []).length > 0 ? (
-        <Card title="Gateway tokens by model">
+        <Card
+          title="Gateway tokens by model"
+          subtitle="Real metering from system.ai_gateway.usage (input + output). Row totals should match the Gateway tokens card above."
+        >
           <div className="overflow-x-auto">
             <table className="w-full min-w-[480px] text-left text-sm">
               <thead className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
@@ -388,6 +509,22 @@ export function CostView() {
                   </tr>
                 ))}
               </tbody>
+              <tfoot className="border-t border-[var(--color-border)] text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
+                <tr>
+                  <td className="pt-3 pr-4 text-[var(--color-fg)]">Total</td>
+                  <td className="pt-3 pr-4 tabular-nums">
+                    {(gw.by_model ?? []).reduce((n, r) => n + (r.requests ?? 0), 0)}
+                  </td>
+                  <td className="pt-3 pr-4">—</td>
+                  <td className="pt-3 pr-4">—</td>
+                  <td className="pt-3 tabular-nums text-[var(--color-teal)]">
+                    {(
+                      gw.total_tokens ??
+                      (gw.by_model ?? []).reduce((n, r) => n + (r.total_tokens ?? 0), 0)
+                    ).toLocaleString()}
+                  </td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         </Card>
@@ -440,9 +577,13 @@ export function CostView() {
         </Card>
       ) : null}
 
-      <Card title="Inference table (proxy)">
+      <Card
+        title="Log size estimate (proxy)"
+        subtitle="Not gateway metering — guesses tokens from JSON body size in UC payload tables (chars ÷ 4). Usually higher than Gateway tokens."
+      >
         <p className="mb-3 text-xs text-[var(--color-muted)]">
-          {(total != null ? Math.round(total) : 0).toLocaleString()} est. tokens (char/4) in window.
+          {(total != null ? Math.round(total) : 0).toLocaleString()} est. tokens in window — do not add to Gateway
+          tokens above.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[480px] text-left text-sm">

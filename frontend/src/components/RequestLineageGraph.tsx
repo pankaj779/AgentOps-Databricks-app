@@ -1,4 +1,6 @@
+import { useEffect, useState, type ReactNode } from 'react'
 import type { LineageGraph } from '@/lib/api'
+import { callerDisplay } from '@/lib/callerDisplay'
 
 const kindStyles: Record<
   string,
@@ -24,6 +26,16 @@ const kindStyles: Record<
     glow: 'shadow-[0_0_26px_rgba(255,54,33,0.2)]',
     chip: 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]',
   },
+  storage: {
+    ring: 'border-teal-400/40',
+    glow: 'shadow-[0_0_20px_rgba(45,212,191,0.15)]',
+    chip: 'bg-teal-500/15 text-teal-200',
+  },
+  billing: {
+    ring: 'border-amber-400/40',
+    glow: 'shadow-[0_0_22px_rgba(251,191,36,0.18)]',
+    chip: 'bg-amber-500/15 text-amber-200',
+  },
   response: {
     ring: 'border-emerald-400/40',
     glow: 'shadow-[0_0_24px_rgba(52,211,153,0.2)]',
@@ -37,13 +49,16 @@ const defaultKind = {
   chip: 'bg-[var(--color-surface-elevated)] text-[var(--color-muted)]',
 }
 
-function FlowConnector() {
+function FlowConnector({ active }: { active: boolean }) {
   return (
     <div
       className="relative mx-0.5 flex h-14 w-10 shrink-0 items-center justify-center sm:w-14"
       aria-hidden
     >
-      <svg className="h-8 w-full overflow-visible text-[var(--color-teal)]" viewBox="0 0 56 32">
+      <svg
+        className={`h-8 w-full overflow-visible ${active ? 'text-[var(--color-teal)]' : 'text-[var(--color-muted)]'}`}
+        viewBox="0 0 56 32"
+      >
         <defs>
           <linearGradient id="ln-grad" x1="0%" y1="0%" x2="100%" y2="0%">
             <stop offset="0%" stopColor="currentColor" stopOpacity="0.35" />
@@ -57,9 +72,15 @@ function FlowConnector() {
           stroke="url(#ln-grad)"
           strokeWidth="2"
           strokeLinecap="round"
-          className="lineage-edge-path"
+          className={active ? 'lineage-edge-path' : ''}
         />
-        <path d="M 48 16 L 42 12 M 48 16 L 42 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        <path
+          d="M 48 16 L 42 12 M 48 16 L 42 20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
       </svg>
     </div>
   )
@@ -67,6 +88,20 @@ function FlowConnector() {
 
 export function RequestLineageGraph({ graph }: { graph: LineageGraph }) {
   const nodes = graph?.nodes ?? []
+  const [visibleCount, setVisibleCount] = useState(0)
+
+  useEffect(() => {
+    setVisibleCount(0)
+    if (!nodes.length) return
+    let i = 0
+    const t = window.setInterval(() => {
+      i += 1
+      setVisibleCount(i)
+      if (i >= nodes.length) window.clearInterval(t)
+    }, 220)
+    return () => window.clearInterval(t)
+  }, [graph, nodes.length])
+
   if (!nodes.length) return null
 
   return (
@@ -81,19 +116,56 @@ export function RequestLineageGraph({ graph }: { graph: LineageGraph }) {
       <div className="relative">
         <div className="flex items-center justify-between gap-2">
           <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-teal)]">
-            Request flow
+            Request journey
           </div>
-          <span className="text-[10px] text-[var(--color-muted)]">Hover steps for full detail</span>
+          <span className="text-[10px] text-[var(--color-muted)]">Animated flow · hover for detail</span>
         </div>
         <div className="mt-4 overflow-x-auto pb-1">
           <div className="flex min-w-max flex-nowrap items-center px-0.5">
             {nodes.map((n, i) => {
               const st = kindStyles[n.kind] ?? defaultKind
+              const shown = i < visibleCount
+              const rawDetail = n.detail || '—'
+              let body: ReactNode
+              if (n.kind === 'caller' && rawDetail !== '—') {
+                const lines = rawDetail
+                  .split('\n')
+                  .map((s) => s.trim())
+                  .filter(Boolean)
+                const first = lines[0] ?? ''
+                const cd0 = callerDisplay(first || null)
+                const sub = lines.slice(1)
+                body = (
+                  <>
+                    <span title={cd0.full ?? first}>{cd0.primary}</span>
+                    {sub.length ? (
+                      <span className="mt-1 block max-h-12 overflow-y-auto text-[9px] leading-snug text-[var(--color-muted)] whitespace-pre-wrap">
+                        {sub.join('\n')}
+                      </span>
+                    ) : null}
+                  </>
+                )
+              } else {
+                const cd = n.kind === 'caller' ? callerDisplay(rawDetail === '—' ? null : rawDetail) : null
+                let primary = cd?.primary ?? rawDetail
+                if (primary.length > 160) {
+                  primary = `${primary.slice(0, 157)}…`
+                }
+                body = primary
+              }
               return (
-                <div key={n.id} className="flex items-center">
+                <div
+                  key={n.id}
+                  className="flex items-center"
+                  style={{
+                    opacity: shown ? 1 : 0,
+                    transform: shown ? 'translateY(0)' : 'translateY(8px)',
+                    transition: 'opacity 0.35s ease, transform 0.35s ease',
+                  }}
+                >
                   <div className="group relative">
                     <div
-                      className={`w-[10.5rem] shrink-0 cursor-default rounded-2xl border-2 bg-[var(--color-surface)]/90 px-3 py-2.5 transition duration-300 sm:w-44 ${st.ring} ${st.glow} group-hover:scale-[1.02] group-hover:brightness-105`}
+                      className={`w-[10.5rem] shrink-0 cursor-default rounded-2xl border-2 bg-[var(--color-surface)]/90 px-3 py-2.5 transition duration-300 sm:w-44 ${st.ring} ${st.glow} group-hover:scale-[1.03] group-hover:brightness-105`}
                     >
                       <div
                         className={`inline-block rounded-md px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${st.chip}`}
@@ -101,7 +173,7 @@ export function RequestLineageGraph({ graph }: { graph: LineageGraph }) {
                         {n.title}
                       </div>
                       <div className="mt-1.5 max-h-[5.5rem] overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-snug text-[var(--color-fg)]">
-                        {(n.detail || '—').length > 180 ? `${(n.detail || '').slice(0, 177)}…` : n.detail || '—'}
+                        {body}
                       </div>
                     </div>
                     <div
@@ -113,11 +185,11 @@ export function RequestLineageGraph({ graph }: { graph: LineageGraph }) {
                         {n.detail || '—'}
                       </div>
                       <div className="mt-2 border-t border-[var(--color-border)] pt-1.5 text-[10px] text-[var(--color-muted)]">
-                        Step {i + 1} of {nodes.length} · kind: {n.kind}
+                        Step {i + 1} of {nodes.length}
                       </div>
                     </div>
                   </div>
-                  {i < nodes.length - 1 ? <FlowConnector /> : null}
+                  {i < nodes.length - 1 ? <FlowConnector active={shown} /> : null}
                 </div>
               )
             })}

@@ -10,6 +10,8 @@ import { HealthView } from '@/views/HealthView'
 import { OverviewView } from '@/views/OverviewView'
 import { QualityView } from '@/views/QualityView'
 import { AgentHubView } from '@/views/AgentHubView'
+import { CompareModelsView } from '@/views/CompareModelsView'
+import { WorkspaceStatusBar } from '@/components/WorkspaceStatusBar'
 import type { DatabricksHealth } from '@/lib/api'
 import { fetchHealth } from '@/lib/api'
 import { applyThemeToDocument, getStoredTheme, setStoredTheme, type ThemeMode } from '@/lib/theme'
@@ -21,7 +23,11 @@ const pageMeta: Record<NavId, { title: string; subtitle: string }> = {
   },
   agents: {
     title: 'Agents',
-    subtitle: 'Browse models, multi-select combined cost, then drill into requests and token detail.',
+    subtitle: 'Pick agents, open any request for the full journey (cost, trace, lineage).',
+  },
+  compare: {
+    title: 'Compare models',
+    subtitle: 'Side-by-side scorecard and live multi-target benchmark on one prompt.',
   },
   health: {
     title: 'Agent health',
@@ -48,6 +54,7 @@ export function AppShell() {
   const [apiOk, setApiOk] = useState<boolean | null>(null)
   const [db, setDb] = useState<DatabricksHealth | null>(null)
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredTheme())
+  const [refreshToken, setRefreshToken] = useState(0)
 
   useEffect(() => {
     applyThemeToDocument(themeMode)
@@ -102,13 +109,18 @@ export function AppShell() {
           onThemeToggle={toggleTheme}
         />
         <SelectionBanner />
+        <WorkspaceStatusBar
+          refreshToken={refreshToken}
+          onRefresh={() => setRefreshToken((t) => t + 1)}
+        />
         <main className="app-main flex-1 overflow-y-auto">
-          {nav === 'overview' ? <OverviewView /> : null}
-          {nav === 'agents' ? <AgentHubView /> : null}
-          {nav === 'health' ? <HealthView /> : null}
-          {nav === 'cost' ? <CostView /> : null}
-          {nav === 'quality' ? <QualityView /> : null}
-          {nav === 'governance' ? <GovernanceView /> : null}
+          {nav === 'overview' ? <OverviewView refreshToken={refreshToken} /> : null}
+          {nav === 'agents' ? <AgentHubView refreshToken={refreshToken} /> : null}
+          {nav === 'compare' ? <CompareModelsView refreshToken={refreshToken} /> : null}
+          {nav === 'health' ? <HealthView refreshToken={refreshToken} /> : null}
+          {nav === 'cost' ? <CostView refreshToken={refreshToken} /> : null}
+          {nav === 'quality' ? <QualityView refreshToken={refreshToken} /> : null}
+          {nav === 'governance' ? <GovernanceView refreshToken={refreshToken} /> : null}
         </main>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { ModelCompareResults } from '@/components/ModelCompareResults'
@@ -23,6 +23,13 @@ import { NAV_PATHS } from '@/lib/navigation'
 import { useWorkspaceSelection } from '@/context/WorkspaceSelectionContext'
 
 function extractMessagesFromRequest(req: unknown): { role: string; content: string }[] {
+  if (typeof req === 'string') {
+    try {
+      return extractMessagesFromRequest(JSON.parse(req))
+    } catch {
+      return [{ role: 'user', content: '' }]
+    }
+  }
   if (!req || typeof req !== 'object') return [{ role: 'user', content: '' }]
   const r = req as Record<string, unknown>
   if (Array.isArray(r.messages)) {
@@ -39,6 +46,32 @@ function extractMessagesFromRequest(req: unknown): { role: string; content: stri
     if (out.length) return out
   }
   return [{ role: 'user', content: '' }]
+}
+
+/** Pretty-print parsed JSON bodies; stringify raw strings safely. */
+function formatPrettyJsonBody(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string') {
+    const s = value.trim()
+    if ((s.startsWith('{') && s.endsWith('}')) || (s.startsWith('[') && s.endsWith(']'))) {
+      try {
+        return JSON.stringify(JSON.parse(s), null, 2)
+      } catch {
+        /* fallthrough */
+      }
+    }
+    return value
+  }
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function isWrappedRawResponse(v: unknown): v is { _note?: string; _raw?: string } {
+  if (typeof v !== 'object' || v === null) return false
+  return typeof (v as Record<string, unknown>)._raw === 'string'
 }
 
 export function TraceDetailPage() {
@@ -120,6 +153,29 @@ export function TraceDetailPage() {
       .then(setReplayTargets)
       .catch(() => setReplayTargets({ targets: [] }))
   }, [])
+
+  const resolvedCols = detail?.payload_columns_resolved
+
+  const requestBodyText = useMemo(() => {
+    const raw = detail?.request_json ?? detail?.record?.request
+    if (raw == null) return ''
+    if (typeof raw === 'string' && !raw.trim()) return ''
+    return formatPrettyJsonBody(raw)
+  }, [detail?.request_json, detail?.record?.request])
+
+  const responseBodyText = useMemo(() => {
+    const rj = detail?.response_json
+    if (rj != null && isWrappedRawResponse(rj)) {
+      const bits = [rj._note, rj._raw].filter(Boolean)
+      return bits.join('\n\n')
+    }
+    if (rj != null) {
+      return formatPrettyJsonBody(rj)
+    }
+    const rec = detail?.record?.response
+    if (rec == null || (typeof rec === 'string' && !rec.trim())) return ''
+    return formatPrettyJsonBody(rec)
+  }, [detail?.response_json, detail?.record?.response])
 
   const trackLabel = (checked: boolean, onChange: (v: boolean) => void) => (
     <label className="mb-3 flex cursor-pointer items-start gap-2 text-[11px] text-[var(--color-muted)]">
@@ -241,11 +297,19 @@ export function TraceDetailPage() {
           </Card>
         ) : null}
 
-        {!loading && (replayTargets?.targets?.length ?? 0) > 0 && detail?.request_id ? (
+        {!loading && detail?.request_id ? (
           <Card
             title="Replay this request"
-            subtitle="Re-sends the exact JSON body stored for this trace to every model in replay_targets.json (same prompt, tools, and params as the original call)."
+            subtitle="Re-sends the same stored JSON body to every route in backend/replay_targets.json (agentops_test, gemma-3-model_payload, llama-4-model_payload)."
           >
+            {(replayTargets?.targets?.length ?? 0) === 0 ? (
+              <p className="mb-3 text-sm text-[var(--color-warn-fg)]">
+                Loading replay targets… If this stays empty, fix{' '}
+                <code className="text-[10px]">backend/replay_targets.json</code> (must be a JSON array) and
+                restart the API.
+              </p>
+            ) : (
+              <>
             {trackLabel(trackReplayInDashboard, setTrackReplayInDashboard)}
             <button
               type="button"
@@ -277,12 +341,14 @@ export function TraceDetailPage() {
               objectiveSummary={replayResult?.objective_summary}
               costEstimate={replayResult?.cost_estimate}
             />
+              </>
+            )}
           </Card>
         ) : null}
 
         <Card
           title="Custom prompt benchmark"
-          subtitle="Type any new question below and send it to all replay targets (not the stored trace body — use “Replay this request” above for that)."
+          subtitle="Type a new question and send it to all replay targets (different from “Replay this request”, which reuses the stored trace JSON)."
         >
           {(replayTargets?.targets?.length ?? 0) === 0 ? (
             <div className="mb-3 rounded-lg border border-[var(--color-warn-border)] bg-[var(--color-warn-bg)] px-3 py-2 text-[11px] text-[var(--color-warn-fg)]">
@@ -357,8 +423,54 @@ export function TraceDetailPage() {
           />
         </Card>
 
+        {!loading && detail?.cost_attribution ? (
+          <Card title="Cost attribution (this request)">
+            <p className="text-xs text-[var(--color-muted)]">
+              Why this request costs what it costs — gateway metering + billing.usage match when available.
+              {detail.cost_attribution.metering_source === 'completion_response_json'
+                ? ' Tokens here come from completion.usage embedded in your inference payload (Agent / Apps traffic often differs from system.ai_gateway.usage request_id).'
+                : detail.cost_attribution.metering_source === 'ai_gateway_heuristic_time_destination'
+                  ? ' Tokens matched system.ai_gateway.usage by gateway event time + destination_id.'
+                  : null}
+            </p>
+            <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+              <div>
+                <dt className="text-[10px] uppercase text-[var(--color-muted)]">Gateway tokens</dt>
+                <dd className="tabular-nums font-medium text-[var(--color-teal)]">
+                  {detail.cost_attribution.gateway_tokens?.toLocaleString() ?? '—'}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase text-[var(--color-muted)]">List price (est.)</dt>
+                <dd className="tabular-nums font-medium">
+                  {detail.cost_attribution.list_usd != null
+                    ? `USD ${detail.cost_attribution.list_usd.toFixed(6)}`
+                    : '—'}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase text-[var(--color-muted)]">DBU</dt>
+                <dd className="tabular-nums">{detail.cost_attribution.dbu ?? '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase text-[var(--color-muted)]">Attribution</dt>
+                <dd className="font-mono text-[10px]">{detail.cost_attribution.attribution ?? '—'}</dd>
+              </div>
+            </dl>
+            {(detail.cost_attribution.by_endpoint ?? []).length > 0 ? (
+              <ul className="mt-3 space-y-1 text-[11px] font-mono text-[var(--color-muted)]">
+                {detail.cost_attribution.by_endpoint!.map((ep, i) => (
+                  <li key={i}>
+                    {ep.endpoint_name ?? 'endpoint'} · DBU {ep.dbu ?? '—'} · ${ep.list_usd ?? '—'}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </Card>
+        ) : null}
+
         {!loading && detail?.lineage_graph?.nodes?.length ? (
-          <Card title="Request journey">
+          <Card title="Request journey" subtitle="Animated path for this request_id">
             <RequestLineageGraph graph={detail.lineage_graph} />
           </Card>
         ) : null}
@@ -376,51 +488,45 @@ export function TraceDetailPage() {
           </Card>
         ) : null}
 
-        {detail?.request_json != null ? (
+        {requestBodyText ? (
           <Card>
-            <details>
+            {(resolvedCols?.request_body ?? resolvedCols?.response_body) ? (
+              <p className="-mt-2 mb-2 text-[10px] text-[var(--color-muted)]">
+                Payload columns mapped:{' '}
+                <span className="font-mono">
+                  request={resolvedCols?.request_body ?? '—'}, response={resolvedCols?.response_body ?? '—'}
+                </span>
+              </p>
+            ) : null}
+            <details open>
               <summary className="cursor-pointer text-sm font-semibold text-[var(--color-teal)]">
                 Request JSON
               </summary>
-              <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-black/20 p-2 text-[10px]">
-                {JSON.stringify(detail.request_json, null, 2)}
+              <pre className="mt-2 max-h-[min(60vh,32rem)] overflow-auto rounded-lg bg-black/20 p-2 text-[10px]">
+                {requestBodyText}
               </pre>
             </details>
           </Card>
         ) : null}
 
-        {detail?.response_json != null || detail?.response_raw ? (
+        {responseBodyText ? (
           <Card>
             <details open>
               <summary className="cursor-pointer text-sm font-semibold text-[var(--color-teal)]">
-                Response
+                Response JSON
               </summary>
-              <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-black/20 p-2 text-[10px]">
-                {detail.response_raw
-                  ? detail.response_raw
-                  : typeof detail.response_json === 'string'
-                    ? detail.response_json
-                    : JSON.stringify(detail.response_json, null, 2)}
+              <pre className="mt-2 max-h-[min(70vh,40rem)] whitespace-pre-wrap break-all overflow-auto rounded-lg bg-black/20 p-2 text-[10px]">
+                {responseBodyText}
               </pre>
             </details>
           </Card>
-        ) : detail?.record &&
-          detail.record.response != null &&
-          String(detail.record.response).length > 0 ? (
-          <Card>
-            <details>
-              <summary className="cursor-pointer text-sm font-semibold text-[var(--color-teal)]">
-                Response (raw payload)
-              </summary>
-              <p className="mt-2 text-[11px] text-[var(--color-muted)]">
-                Stored response did not parse as JSON — showing raw text from the log row.
-              </p>
-              <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-black/20 p-2 text-[10px]">
-                {typeof detail.record.response === 'string'
-                  ? detail.record.response.slice(0, 24000)
-                  : JSON.stringify(detail.record.response, null, 2).slice(0, 24000)}
-              </pre>
-            </details>
+        ) : !loading && detail && !detail.error ? (
+          <Card subtitle="Inference payload columns">
+            <p className="text-sm text-[var(--color-muted)]">
+              No response body returned for this row. If Gateway shows text above, UC may omit the assistant payload for
+              this model, or use a column name AgentOps doesn’t map yet (
+              <span className="font-mono text-[var(--color-fg)]">{resolvedCols?.response_body ?? '—'}</span>).
+            </p>
           </Card>
         ) : null}
       </main>

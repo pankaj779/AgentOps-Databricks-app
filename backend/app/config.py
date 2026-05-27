@@ -124,6 +124,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AGENTOPS_COMPARE_USD_PER_1M_TOKENS"),
     )
 
+    gateway_aliases_file: str = Field(
+        default="gateway_aliases.json",
+        validation_alias=AliasChoices("AGENTOPS_GATEWAY_ALIASES_FILE"),
+    )
+
 
 def get_settings() -> Settings:
     """Fresh read from env / backend/.env so edits apply without restarting the worker (dev-friendly)."""

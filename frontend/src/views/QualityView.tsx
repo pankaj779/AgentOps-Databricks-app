@@ -13,6 +13,7 @@ import {
 import { X } from 'lucide-react'
 import { ModelCompareResults } from '@/components/ModelCompareResults'
 import { RequestLineageGraph } from '@/components/RequestLineageGraph'
+import { callerDisplayForTrace } from '@/lib/callerDisplay'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { useWorkspaceSelection } from '@/context/WorkspaceSelectionContext'
@@ -38,12 +39,14 @@ import {
   postReplayRun,
 } from '@/lib/api'
 
+import { TIME_RANGE_OPTIONS, timeRangeLabel, type TimeRangeHours } from '@/lib/timeRange'
+
 const axisProps = {
   stroke: 'var(--color-muted)',
   tick: { fill: 'var(--color-muted)', fontSize: 10 },
 }
 
-export function QualityView() {
+export function QualityView({ refreshToken = 0 }: { refreshToken?: number }) {
   const location = useLocation()
   const { agents: scopeAgents, task, setTask } = useWorkspaceSelection()
   const [obs, setObs] = useState<QualityObservabilityResponse | null>(null)
@@ -59,13 +62,14 @@ export function QualityView() {
   const [replayResult, setReplayResult] = useState<ReplayRunResponse | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [traceSearch, setTraceSearch] = useState('')
+  const [obsHours, setObsHours] = useState<TimeRangeHours>(168)
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       try {
         const [o, t, m] = await Promise.all([
-          fetchQualityObservability(),
+          fetchQualityObservability(obsHours),
           fetchQualityTrend(14),
           fetchMlflowOverview(25),
         ])
@@ -82,7 +86,7 @@ export function QualityView() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [refreshToken, obsHours])
 
   useEffect(() => {
     let cancelled = false
@@ -98,7 +102,7 @@ export function QualityView() {
     return () => {
       cancelled = true
     }
-  }, [scopeAgents.join('\0')])
+  }, [scopeAgents.join('\0'), refreshToken])
 
   useEffect(() => {
     setTraceSearch('')
@@ -183,7 +187,8 @@ export function QualityView() {
       const id = (t.request_id ?? '').toLowerCase()
       const grp = (t.comparison_group_id ?? '').toLowerCase()
       const caller = (t.requester ?? '').toLowerCase()
-      return id.includes(q) || grp.includes(q) || caller.includes(q)
+      const actor = (t.request_actor ?? '').toLowerCase()
+      return id.includes(q) || grp.includes(q) || caller.includes(q) || actor.includes(q)
     })
   }, [traces?.traces, traceSearch])
 
@@ -199,14 +204,40 @@ export function QualityView() {
       {err ? <p className="text-sm text-[var(--color-danger)]">{err}</p> : null}
       {obs?.error ? <p className="text-sm text-[var(--color-warn-fg)]">{obs.error}</p> : null}
 
-      <Card title="Production observability">
+      <Card
+        title="Production observability"
+        subtitle={`Rollup from Inference Tables (${timeRangeLabel(obsHours)} · same exclude-test preference as elsewhere).`}
+      >
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+            <span>Window</span>
+            <select
+              value={obsHours}
+              onChange={(e) => setObsHours(Number(e.target.value) as TimeRangeHours)}
+              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[var(--color-fg)]"
+            >
+              {TIME_RANGE_OPTIONS.map((opt) => (
+                <option key={opt.hours} value={opt.hours}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {obs?.fallback_gateway_metrics ? (
+            <Badge tone="neutral">AI Gateway supplemental</Badge>
+          ) : null}
+          <span className="text-[10px] text-[var(--color-muted)]">
+            Columns: latency <span className="font-mono">{obs?.latency_column_used ?? '—'}</span>, response scan{' '}
+            <span className="font-mono">{obs?.response_column_used ?? '—'}</span>
+          </span>
+        </div>
         {obs ? (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Metric title="p50 latency" value={obs.p50_latency_ms != null ? `${Math.round(obs.p50_latency_ms)} ms` : '—'} />
             <Metric title="p95 latency" value={obs.p95_latency_ms != null ? `${Math.round(obs.p95_latency_ms)} ms` : '—'} />
             <Metric title="Avg latency" value={obs.avg_latency_ms != null ? `${Math.round(obs.avg_latency_ms)} ms` : '—'} />
             <Metric
-              title="Error rate (24h)"
+              title={`Error rate (${obs.window_hours ?? obsHours}h)`}
               value={obs.error_rate_pct != null ? `${obs.error_rate_pct.toFixed(2)}%` : '—'}
             />
             <Metric
@@ -214,16 +245,29 @@ export function QualityView() {
               value={
                 obs.responses_with_reasoning_pct != null
                   ? `${obs.responses_with_reasoning_pct}% (n=${obs.requests_sampled_for_json})`
-                  : '—'
+                  : obs.response_column_used
+                    ? `— (sampled ${obs.requests_sampled_for_json})`
+                    : '— (no response column)'
               }
             />
           </div>
         ) : (
           <p className="text-sm text-[var(--color-muted)]">Loading…</p>
         )}
+        {obs?.inference_notes ? (
+          <p className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-elevated)]/50 p-3 text-[11px] text-[var(--color-muted)]">
+            {obs.inference_notes}
+          </p>
+        ) : null}
+        {obs?.note && obs.source !== 'inference_table' ? (
+          <p className="mt-3 text-[11px] text-[var(--color-muted)]">{obs.note}</p>
+        ) : null}
       </Card>
 
-      <Card title="MLflow (system tables)">
+      <Card
+        title="MLflow (system tables)"
+        subtitle="Separate from gateway / Inference Tables telemetry — fills only when workloads call MLflow Tracking (mlflow.start_run / autolog)."
+      >
         {mlf?.error ? (
           <p className="text-sm text-[var(--color-warn-fg)]">{mlf.error}</p>
         ) : !mlf ? (
@@ -287,10 +331,23 @@ export function QualityView() {
                 </table>
               </div>
             ) : (
-              <p className="mt-4 text-sm text-[var(--color-muted)]">
-                No MLflow runs in <code className="text-xs">system.mlflow.runs_latest</code> for this workspace yet — run
-                an experiment or notebook with MLflow tracking, then refresh.
-              </p>
+              <div className="mt-4 space-y-3 text-sm text-[var(--color-muted)]">
+                <p>
+                  Showing workspace{' '}
+                  <span className="font-mono text-[var(--color-fg)]">
+                    {mlf.workspace_id_filter ?? '— (set DATABRICKS_WORKSPACE_ID for filter)'}
+                  </span>{' '}
+                  —{' '}
+                  <span className="font-medium text-[var(--color-fg)]">zero runs usually means nobody logged MLflow</span>{' '}
+                  in this workspace (typical if you only use AI Gateway Inference Tables).
+                </p>
+                <p className="text-xs">
+                  To populate: enable UC MLflow system tables + run notebooks or pipelines with MLflow tracking (Unity
+                  Catalog experiments). AgentOps Quality above does{' '}
+                  <span className="text-[var(--color-fg)]">not depend on MLflow runs</span> — it reads inference payloads
+                  and gateway usage.
+                </p>
+              </div>
             )}
           </>
         )}
@@ -388,7 +445,7 @@ export function QualityView() {
             type="search"
             value={traceSearch}
             onChange={(e) => setTraceSearch(e.target.value)}
-            placeholder="Filter by request id, comparison group, or caller…"
+            placeholder="Filter by request id, comparison group, caller, or request user…"
             className="mb-2 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-xs text-[var(--color-fg)] placeholder:text-[var(--color-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/40"
             aria-label="Filter traces"
           />
@@ -396,6 +453,11 @@ export function QualityView() {
             <p className="text-sm text-[var(--color-warn-fg)]">{traces.error}</p>
           ) : (
             <div className="max-h-[320px] overflow-auto rounded-lg border border-[var(--color-border)]">
+              <p className="mb-2 text-[10px] leading-snug text-[var(--color-muted)]">
+                <span className="font-mono">requester</span> is the OAuth / gateway principal Databricks logs. When your
+                agent sends an OpenAI-style <span className="font-mono">user</span> or metadata (email, display name),
+                that shows as the caller column instead. Hover for both.
+              </p>
               <table className="w-full text-left text-xs">
                 <thead className="sticky top-0 z-10 bg-[var(--color-surface-elevated)] text-[10px] font-semibold uppercase tracking-wide text-[var(--color-muted)]">
                   <tr>
@@ -444,8 +506,15 @@ export function QualityView() {
                         <td className="px-2 py-2 tabular-nums text-[var(--color-muted)]">
                           {t.latency_ms != null ? Math.round(t.latency_ms) : '—'}
                         </td>
-                        <td className="max-w-[140px] truncate px-2 py-2 text-[var(--color-muted)]">
-                          {t.requester ?? '—'}
+                        <td className="max-w-[140px] truncate px-2 py-2 font-mono text-[var(--color-muted)]">
+                          {(() => {
+                            const cd = callerDisplayForTrace(t.request_actor, t.requester)
+                            return (
+                              <span title={cd.full ?? cd.primary} className="cursor-default">
+                                {cd.primary}
+                              </span>
+                            )
+                          })()}
                         </td>
                       </tr>
                     ))
@@ -554,16 +623,21 @@ export function QualityView() {
                   ) : null}
                 </div>
               ) : null}
-              {!loadingDetail && (replayTargets?.targets?.length ?? 0) > 0 && detail?.request_id ? (
-                <div className="mb-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-elevated)]/50 p-3 text-xs">
-                  <div className="font-semibold text-[var(--color-teal)]">Replay on alternate endpoints</div>
+              {!loadingDetail && detail?.request_id ? (
+                <div className="mb-4 rounded-xl border border-[var(--color-teal)]/40 bg-[var(--color-teal)]/5 p-3 text-xs">
+                  <div className="font-semibold text-[var(--color-teal)]">Replay this request</div>
                   <p className="mt-1 text-[var(--color-muted)]">
-                    POSTs the logged request JSON to targets from <code className="text-[10px]">AGENTOPS_REPLAY_TARGETS_JSON</code> (
-                    localhost only — requires reachable URLs).
+                    Re-sends the stored trace JSON to every route in{' '}
+                    <code className="text-[10px]">backend/replay_targets.json</code> (same question as production).
                   </p>
+                  {(replayTargets?.targets?.length ?? 0) === 0 ? (
+                    <p className="mt-2 text-[var(--color-warn-fg)]">
+                      No replay targets loaded — fix JSON array in replay_targets.json and restart API.
+                    </p>
+                  ) : null}
                   <button
                     type="button"
-                    disabled={replayBusy}
+                    disabled={replayBusy || (replayTargets?.targets?.length ?? 0) === 0}
                     className="mt-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[var(--color-fg)] enabled:hover:bg-[var(--color-surface-elevated)] disabled:opacity-50"
                     onClick={() => {
                       if (!detail.request_id) return

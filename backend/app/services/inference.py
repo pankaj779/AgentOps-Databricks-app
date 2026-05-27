@@ -52,6 +52,29 @@ STATUS_CANDIDATES: tuple[str, ...] = (
     "status",
 )
 
+"""Common UC inference table column aliases (payload JSON bodies)."""
+
+REQUEST_BODY_CANDIDATES: tuple[str, ...] = (
+    "request",
+    "payload",
+    "input",
+    "request_body",
+    "messages_payload",
+    "prompt",
+)
+
+RESPONSE_BODY_CANDIDATES: tuple[str, ...] = (
+    "response",
+    "model_response",
+    "output",
+    "responses",
+    "completion",
+    "assistant_response",
+    "raw_response",
+    "result",
+    "model_output",
+)
+
 
 def _pick_column(available: set[str], candidates: tuple[str, ...]) -> str | None:
     lower = {c.lower(): c for c in available}

@@ -1,0 +1,26 @@
+# Databricks Apps manifest (adjust paths for your bundle layout)
+command:
+  - python
+  - -m
+  - uvicorn
+  - app.main:app
+  - --host
+  - "0.0.0.0"
+  - --port
+  - "8000"
+
+env:
+  - name: DATABRICKS_HOST
+    valueFrom: secret
+  - name: DATABRICKS_TOKEN
+    valueFrom: secret
+  - name: DATABRICKS_HTTP_PATH
+    valueFrom: secret
+  - name: DATABRICKS_WORKSPACE_ID
+    valueFrom: secret
+  - name: AGENTOPS_INFERENCE_SCHEMA
+    value: agentops.agent_logs
+  - name: AGENTOPS_EXCLUDE_TEST_REQUESTS
+    value: "true"
+  - name: AGENTOPS_BENCHMARK_ENABLED
+    value: "true"

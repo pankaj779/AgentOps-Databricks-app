@@ -32,7 +32,7 @@ function modeLabel(mode: string, requestsSource: string) {
   }
 }
 
-export function OverviewView() {
+export function OverviewView({ refreshToken = 0 }: { refreshToken?: number }) {
   const { agents: scopedAgents, setAgent } = useWorkspaceSelection()
   const location = useLocation()
   const navigate = useNavigate()
@@ -90,7 +90,7 @@ export function OverviewView() {
 
   useEffect(() => {
     void loadData()
-  }, [loadData])
+  }, [loadData, refreshToken])
 
   const runDiagnostics = async () => {
     setDiagLoading(true)
@@ -141,6 +141,7 @@ export function OverviewView() {
           {
             label: `Requests (${timeRangeLabel(overview.window_hours ?? hours)})`,
             value: formatNumber(overview.count_window),
+            hint: 'All agents combined; replay/benchmark rows excluded when configured',
           },
         ]
       : overview.count_7d != null

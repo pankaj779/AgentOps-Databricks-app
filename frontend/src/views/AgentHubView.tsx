@@ -10,7 +10,7 @@ import { NAV_PATHS } from '@/lib/navigation'
 
 type TabId = 'directory' | 'requests'
 
-export function AgentHubView() {
+export function AgentHubView({ refreshToken = 0 }: { refreshToken?: number }) {
   const location = useLocation()
   const navigate = useNavigate()
   const [sp, setSp] = useSearchParams()
@@ -38,7 +38,7 @@ export function AgentHubView() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [refreshToken])
 
   useEffect(() => {
     const t = sp.get('tab')
@@ -76,7 +76,7 @@ export function AgentHubView() {
     return () => {
       cancelled = true
     }
-  }, [agents])
+  }, [agents, refreshToken])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -148,7 +148,10 @@ export function AgentHubView() {
 
       {tab === 'directory' ? (
         <DataLoadingState loading={catalogLoading} label="Loading agent catalog…">
-        <Card title="Agents & models">
+        <Card
+          title="Agents & models"
+          subtitle="One row per model route (from UC payload tables). Replay uses the same route names as backend/replay_targets.json."
+        >
           <input
             type="search"
             value={search}
@@ -199,9 +202,20 @@ export function AgentHubView() {
                     </label>
                     <div className="min-w-0 flex-1">
                       <div className="font-medium text-[var(--color-fg)]">{e.label}</div>
-                      <div className="font-mono text-[10px] text-[var(--color-muted)]">{e.key}</div>
+                      <div className="font-mono text-[10px] text-[var(--color-muted)]">
+                        {e.gateway_model ? `route: ${e.gateway_model}` : e.key}
+                      </div>
+                      {e.fqn ? (
+                        <div className="font-mono text-[10px] text-[var(--color-muted)]">
+                          logs: {e.fqn}
+                        </div>
+                      ) : null}
                       <Badge tone="neutral" className="mt-1 text-[10px]">
-                        {e.kind === 'inference_table' ? 'Inference table' : 'AI Gateway'}
+                        {e.kind === 'gateway_route'
+                          ? 'AI Gateway route'
+                          : e.kind === 'inference_table'
+                            ? 'Inference table'
+                            : 'AI Gateway'}
                       </Badge>
                     </div>
                     <div className="flex shrink-0 flex-col gap-1">
@@ -322,27 +336,27 @@ export function AgentHubView() {
                         <td className="py-2 pr-3">
                           <div className="flex flex-wrap gap-2">
                             <Link
-                              to={costHrefForTask(t.request_id)}
-                              className="text-[var(--color-accent)] hover:underline"
-                              title="Cost tab with this request pinned"
-                            >
-                              Cost ▾
-                            </Link>
-                            <Link
                               to={{
                                 pathname: `/trace/${encodeURIComponent(t.request_id ?? '')}`,
                                 search: qs,
                               }}
-                              className="text-[var(--color-accent)] hover:underline"
+                              className="rounded-md bg-[var(--color-accent)] px-2 py-0.5 text-[11px] font-semibold text-white hover:opacity-90"
                             >
-                              Full page
+                              Journey →
+                            </Link>
+                            <Link
+                              to={costHrefForTask(t.request_id)}
+                              className="text-[var(--color-teal)] hover:underline"
+                              title="Cost tab with this request pinned"
+                            >
+                              Cost
                             </Link>
                             <button
                               type="button"
-                              className="text-[11px] text-[var(--color-teal)] hover:underline"
+                              className="text-[11px] text-[var(--color-muted)] hover:underline"
                               onClick={() => openTraceDrawer(t)}
                             >
-                              Drawer (Quality)
+                              Quick view
                             </button>
                             {t.comparison_group_id ? (
                               <Link

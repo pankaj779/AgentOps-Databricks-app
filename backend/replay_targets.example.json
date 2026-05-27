@@ -1,17 +1,17 @@
 [
   {
-    "id": "meta-llama-model",
-    "label": "meta-llama-model",
+    "id": "my-first-route",
+    "label": "my-first-route",
     "url": "https://YOUR-WORKSPACE.cloud.databricks.com/ai-gateway/mlflow/v1/chat/completions",
-    "model": "meta-llama-model",
+    "model": "EXACT_AI_GATEWAY_ROUTE_NAME",
     "headers": {},
     "timeout_sec": 120
   },
   {
-    "id": "gemma-3-model",
-    "label": "gemma-3-model",
+    "id": "my-second-route",
+    "label": "my-second-route",
     "url": "https://YOUR-WORKSPACE.cloud.databricks.com/ai-gateway/mlflow/v1/chat/completions",
-    "model": "gemma-3-model",
+    "model": "another_route_as_in_SERVING_UI",
     "headers": {},
     "timeout_sec": 120
   }
